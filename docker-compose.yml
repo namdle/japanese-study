@@ -1,0 +1,46 @@
+# Dev compose: runs FastAPI (--reload) and Vite dev server with hot reload.
+# Source code is bind-mounted so file edits trigger reloads.
+# SQLite db is persisted under ./data on the host.
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: japanese-study-backend
+    environment:
+      APP_DATA_DIR: /app/data
+      # CORS already permits the Vite dev server origin by default.
+    volumes:
+      - ./backend/app:/app/app
+      - ./backend/tests:/app/tests
+      - ./data:/app/data
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/api/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: japanese-study-frontend
+    environment:
+      # Inside the Docker network the backend is reachable by service name.
+      VITE_API_TARGET: http://backend:8000
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/index.html:/app/index.html
+      - ./frontend/vite.config.ts:/app/vite.config.ts
+      - ./frontend/tsconfig.json:/app/tsconfig.json
+    ports:
+      - "5173:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped

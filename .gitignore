@@ -1,0 +1,36 @@
+# Local data: SQLite db, audio files, uploads
+data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+coverage/
+*.tsbuildinfo
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+.deploy-config
+
+# Build artifacts
+*.log

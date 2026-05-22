@@ -1,0 +1,15 @@
+# Dev image for the React frontend with hot reload via Vite.
+# Production assets are bundled into the single-container image in Task 15.
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY package.json package-lock.json* ./
+# Use npm install on first run since package-lock.json may not exist yet.
+RUN npm install
+
+COPY . .
+
+EXPOSE 5173
+
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
