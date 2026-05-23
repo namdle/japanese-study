@@ -1,0 +1,3 @@
+# Copy this file to .deploy-config and fill in your values.
+NAS_HOST=your-nas-hostname-or-ip
+NAS_DEPLOY_PATH=/mnt/user/appdata/japanese-study

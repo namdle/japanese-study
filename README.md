@@ -136,6 +136,92 @@ npm run test
 npx tsc -b      # typecheck
 ```
 
+## Production deployment (Unraid NAS)
+
+### Prerequisites
+
+- Unraid 7.2.2+ with Docker enabled
+- SSH access to the NAS as root
+- Git installed on the NAS (via NerdTools or similar)
+
+### First-time setup on the NAS
+
+```bash
+# SSH into the NAS
+ssh root@YOUR_NAS_IP
+
+# Clone the repo
+mkdir -p /mnt/user/appdata
+cd /mnt/user/appdata
+git clone https://github.com/namdle/japanese-study.git
+cd japanese-study
+
+# Create .env with your API keys
+cp .env.example .env
+nano .env   # fill in ANTHROPIC_API_KEY, GOOGLE_APPLICATION_CREDENTIALS, etc.
+
+# If using Google Cloud Speech, copy the service account JSON:
+mkdir -p /mnt/user/appdata/japanese-study/secrets
+# (scp or copy your gcloud JSON key here)
+# In .env, set: GOOGLE_APPLICATION_CREDENTIALS=/app/data/secrets/gcloud.json
+# And mount it: add -v .../secrets:/app/data/secrets to the docker run command
+
+# Build and run
+docker build -t japanese-study .
+docker run -d \
+  --name japanese-study \
+  --restart unless-stopped \
+  -p 3000:8000 \
+  -v /mnt/user/appdata/japanese-study/data:/app/data \
+  --env-file /mnt/user/appdata/japanese-study/.env \
+  japanese-study
+```
+
+The app is now at `http://YOUR_NAS_IP:3000`.
+
+### Subsequent deploys (from your laptop)
+
+```bash
+# One-time: copy .deploy-config.example to .deploy-config and fill in values
+cp .deploy-config.example .deploy-config
+
+# Deploy (pushes to GitHub, pulls on NAS, rebuilds, restarts)
+./deploy.sh
+```
+
+### Seed family profiles on the NAS
+
+```bash
+ssh root@YOUR_NAS_IP
+docker exec -it japanese-study python seed_users.py create "Mom" --admin
+docker exec -it japanese-study python seed_users.py create "Kid1"
+docker exec -it japanese-study python seed_users.py create "Kid2"
+docker exec -it japanese-study python seed_users.py list
+```
+
+## Enabling remote access (Cloudflare Tunnel + Access)
+
+When you're ready to access the app from outside your home network:
+
+1. **Set up a Cloudflare Tunnel** pointing to `http://localhost:3000` on
+   the NAS. You can run `cloudflared` as a Docker container alongside the
+   app, or install it directly on Unraid via Community Apps.
+
+2. **Enable Cloudflare Access** (free tier) on the tunnel's hostname:
+   - Go to Cloudflare Zero Trust → Access → Applications → Add.
+   - Set the application URL to your tunnel hostname.
+   - Add an **email allowlist** policy with your family's email addresses.
+   - This provides the real auth boundary — the app itself stays
+     password-free internally.
+
+3. **Result**: family members authenticate via email (one-time code) at
+   the Cloudflare edge. Once through, the app works exactly as on LAN.
+   No passwords stored in the app, no JWT, no session cookies to manage.
+
+This keeps the app simple while providing proper security for remote
+access. The trust-based profile picker is fine because Cloudflare Access
+already verified the person is a family member.
+
 ## Project layout
 
 ```

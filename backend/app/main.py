@@ -75,6 +75,28 @@ def create_app() -> FastAPI:
     app.include_router(uploads_api.router)
     app.include_router(profile_api.router)
 
+    # In production, serve the built React app as static files at /.
+    # The env var APP_STATIC_DIR is set by the Dockerfile.
+    import os
+    from pathlib import Path
+
+    static_dir = os.getenv("APP_STATIC_DIR")
+    if static_dir and Path(static_dir).is_dir():
+        from fastapi.responses import FileResponse
+        from fastapi.staticfiles import StaticFiles
+
+        index_html = Path(static_dir) / "index.html"
+
+        # Serve static assets (JS, CSS, images) at /assets/*.
+        assets_dir = Path(static_dir) / "assets"
+        if assets_dir.is_dir():
+            app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets")
+
+        # SPA fallback: any non-API route returns index.html.
+        @app.get("/{full_path:path}")
+        async def spa_fallback(full_path: str):  # noqa: ARG001
+            return FileResponse(str(index_html))
+
     return app
 
 

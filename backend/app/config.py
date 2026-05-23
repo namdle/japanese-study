@@ -26,6 +26,7 @@ class Settings(BaseSettings):
 
     data_dir: Path = Field(default=Path("/app/data"))
     database_filename: str = Field(default="japanese.db")
+    static_dir: Path | None = Field(default=None)
     cors_allow_origins: list[str] = Field(
         default_factory=lambda: ["http://localhost:5173", "http://127.0.0.1:5173"]
     )
