@@ -1,5 +1,8 @@
 # Implementation Plan — Japanese Conversation Practice App
 
+> **Status: ALL 15 TASKS COMPLETE.** This plan is now a historical reference
+> document. See `README.md` for current usage instructions.
+
 ## Problem Statement
 
 Build a self-hosted web application that helps a family of three (one parent admin + two teenage children) practice Japanese conversation with an AI tutor. The tutor follows a kid-friendly, Marugoto-inspired curriculum, supports voice-based conversation, accepts uploaded textbook screenshots to seed sessions, and maintains a personalized learning profile per user that grows smarter over time. The app is deployed to a home Unraid 7.2.2 NAS, follows the same simple operational model as the family's existing `kana-flash` app (https://github.com/namdle/kana-flash), and uses a trust-based profile picker rather than real authentication.

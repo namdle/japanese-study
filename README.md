@@ -8,6 +8,10 @@ See [`PLAN.md`](./PLAN.md) for the full design and task plan.
 
 ## Status
 
+All 15 planned tasks are complete. The app is fully functional for
+voice-based Japanese conversation practice with curriculum-driven sessions,
+textbook image uploads, and personalized learning profiles.
+
 - **Task 1 — done.** Project skeleton, dev Docker Compose, SQLite/WAL, `/api/healthz`.
 - **Task 2 — done.** Profiles (no auth, kana-flash style), `/api/users` CRUD,
   `seed_users.py` CLI, `X-User-Id` header, profile picker, dashboard placeholder,
@@ -38,6 +42,24 @@ See [`PLAN.md`](./PLAN.md) for the full design and task plan.
   `/api/curriculum/*` endpoints. Admin-only lesson plan editor with markdown
   textarea + live preview, save-as-draft / approve / revert workflow.
   Non-admins see read-only approved plans. New **Curriculum** page in the UI.
+- **Task 8 — done.** Session orchestrator with persisted sessions and turns.
+  Picks the next approved lesson, generates an opening greeting (with TTS),
+  persists all turns server-side. Sessions survive page navigation.
+- **Task 9 — done.** Session modes (freeform / 3-phase) and correction-style
+  preferences (end-of-turn / end-of-session). End-of-session generates a
+  wrap-up summary of corrections.
+- **Task 10 — done.** Image upload for textbook-seeded sessions. All four LLM
+  adapters support multimodal vision. The tutor quotes specific words/phrases
+  from the uploaded page and builds practice around them.
+- **Task 11 — done.** Learning profile capture: post-session LLM extraction of
+  vocab, grammar, mistakes, and topics. Mastery tracking with dedup.
+- **Task 12 — done.** Profile snapshot injected into the session prompt so the
+  tutor naturally re-uses earlier vocab and revisits weak spots.
+- **Task 13 — done.** Profile dashboard UI: vocab grid with mastery bars,
+  grammar points, recent mistakes, topic interest chips.
+- **Task 14 — done.** Admin family overview: read-only stats for all profiles.
+- **Task 15 — done.** Production single-container Dockerfile, `deploy.sh` for
+  Unraid NAS, Cloudflare Tunnel + Access documentation.
 
 ## Enabling voice (Google Cloud Speech)
 
