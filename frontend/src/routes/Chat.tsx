@@ -22,6 +22,7 @@ import {
   type SessionDetail,
 } from '../api/sessions';
 import type { User } from '../api/users';
+import { LessonStudy } from '../components/LessonStudy';
 import { useMic } from '../hooks/useMic';
 
 // Auto-stop on/off is remembered per profile in the browser.
@@ -357,6 +358,10 @@ export function Chat({ user }: ChatProps): JSX.Element {
               </ul>
             )}
 
+            {selectedLesson && (
+              <LessonStudy key={selectedLesson.id} lessonId={selectedLesson.id} />
+            )}
+
             <fieldset className="mode-toggle">
               <legend>Session style</legend>
               <label>
@@ -433,6 +438,8 @@ export function Chat({ user }: ChatProps): JSX.Element {
           <p className="page__subtitle">Free conversation.</p>
         )}
       </header>
+
+      {lesson && <LessonStudy key={lesson.id} lessonId={lesson.id} />}
 
       {error && (
         <p className="error-banner" role="alert">

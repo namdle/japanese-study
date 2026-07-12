@@ -23,6 +23,8 @@ RUN pip install --no-cache-dir --upgrade pip \
 # Copy backend source.
 COPY backend/app ./app
 COPY backend/seed_users.py ./
+# Ops/data scripts (lesson-plan import, interest seeding + their committed data).
+COPY backend/scripts ./scripts
 
 # Copy built frontend assets.
 COPY --from=frontend-builder /build/dist ./static

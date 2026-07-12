@@ -27,6 +27,7 @@ from sqlalchemy.engine import Engine
 from app.api.chat import get_provider_for_user_dep
 from app.api.voice import get_speech_provider_dep
 from app.config import get_settings
+from app.curriculum.study import extract_study_sections
 from app.db import (
     lesson_plans_table,
     lessons_table,
@@ -97,6 +98,13 @@ class LessonOptionOut(LessonInfoOut):
 
     practiced_count: int
     last_practiced_at: datetime | None
+
+
+class LessonStudyOut(BaseModel):
+    """Learner-facing study sections of a lesson (Scenario / vocab / patterns)."""
+
+    lesson_id: int
+    study_markdown: str
 
 
 class SessionDetailOut(BaseModel):
@@ -490,6 +498,34 @@ def list_lesson_options(user: CurrentUser, engine: EngineDep) -> list[LessonOpti
             )
         )
     return options
+
+
+@router.get("/lessons/{lesson_id}/study", response_model=LessonStudyOut)
+def get_lesson_study(
+    lesson_id: int, user: CurrentUser, engine: EngineDep
+) -> LessonStudyOut:
+    """The learner-facing study sections (Scenario / vocab / patterns) of an
+    approved lesson, for display in the Practice screen."""
+    with engine.connect() as conn:
+        row = conn.execute(
+            select(lesson_plans_table.c.body_markdown)
+            .select_from(
+                lesson_plans_table.join(
+                    lessons_table,
+                    lessons_table.c.id == lesson_plans_table.c.lesson_id,
+                )
+            )
+            .where(lessons_table.c.id == lesson_id)
+            .where(lesson_plans_table.c.status == "approved")
+        ).one_or_none()
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No approved plan for this lesson",
+        )
+    return LessonStudyOut(
+        lesson_id=lesson_id, study_markdown=extract_study_sections(row[0])
+    )
 
 
 @router.post("/start", response_model=SessionDetailOut, status_code=status.HTTP_201_CREATED)

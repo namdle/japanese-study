@@ -391,6 +391,46 @@ def test_lesson_options_marks_new_and_practiced(session_setup) -> None:
     assert options[0]["last_practiced_at"] is not None
 
 
+def test_lesson_study_returns_learner_sections_only(session_setup) -> None:
+    client, _, _, admin_id, learner_id = session_setup
+    topics = client.get("/api/curriculum/topics").json()
+    lesson_id = topics[0]["lessons"][0]["id"]
+    admin_headers = {"X-User-Id": str(admin_id)}
+    body_md = (
+        "## Scenario\nAt the host home.\n\n"
+        "## Target vocabulary\n- こんにちは\n\n"
+        "## Key sentence patterns\n- はじめまして\n\n"
+        "## Example exchange\n「Tutor:」spoiler\n\n"
+        "## Tutor notes\n- watch particles\n"
+    )
+    client.put(
+        f"/api/curriculum/lessons/{lesson_id}/plan",
+        json={"body_markdown": body_md},
+        headers=admin_headers,
+    )
+    client.post(f"/api/curriculum/lessons/{lesson_id}/plan/approve", headers=admin_headers)
+
+    resp = client.get(
+        f"/api/sessions/lessons/{lesson_id}/study", headers={"X-User-Id": str(learner_id)}
+    )
+    assert resp.status_code == 200
+    md = resp.json()["study_markdown"]
+    assert "Scenario" in md and "Target vocabulary" in md and "Key sentence patterns" in md
+    # Tutor-only sections are stripped (no spoilers / meta guidance).
+    assert "Example exchange" not in md and "spoiler" not in md
+    assert "Tutor notes" not in md
+
+
+def test_lesson_study_404_without_approved_plan(session_setup) -> None:
+    client, _, _, _, learner_id = session_setup
+    topics = client.get("/api/curriculum/topics").json()
+    lesson_id = topics[0]["lessons"][0]["id"]  # never approved in this test
+    resp = client.get(
+        f"/api/sessions/lessons/{lesson_id}/study", headers={"X-User-Id": str(learner_id)}
+    )
+    assert resp.status_code == 404
+
+
 def test_lesson_options_are_per_user(session_setup) -> None:
     client, _, _, admin_id, learner_id = session_setup
     lesson_id = _approve_first_lesson(client, admin_id)

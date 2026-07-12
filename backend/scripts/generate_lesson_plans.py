@@ -68,9 +68,13 @@ GRAMMAR_SEEDS: dict[str, str] = {
     "T04_FRIENDS_A1a": "〜ましょう (let's...) + いいですね (enthusiastic agreement)",
     "T05_HOBBIES_A1": "〜が好きです / 〜をします (simple hobby statement + question)",
     "T05_HOBBIES_A1a": "〜てみたいです (want to try doing something)",
-    "T06_FOOD_A1": "〜が好きです + 〜をください (naming a liked food, simple ordering)",
-    "T06_FOOD_A1a": "〜が好きです + 〜は食べられません (polite dietary restriction, "
-    "e.g. allergies) at a family dinner table",
+    "T06_FOOD_A1": "〜が好きです + 〜をください (naming a liked food, simple ordering). "
+    "Prefer foods teenagers actually eat and get excited about — burgers, pizza, "
+    "sandwiches, pasta, tonkatsu, karaage, ramen, sushi — over traditional basics",
+    "T06_FOOD_A1a": "〜が好きです + 〜は食べられません + 〜アレルギーがあります "
+    "(polite dietary restriction) at a family dinner table. Use modern/Western + "
+    "popular Japanese foods (ハンバーガー, ピザ, パスタ, とんかつ, からあげ, ラーメン). "
+    "Make ピーナッツ (peanut) the drilled allergy example — it's a real, serious one",
     "T07_DAILY_A1": "〜時に〜ます (time + verb: wake up, go to bed)",
     "T07_DAILY_A1a": "〜ています (present progressive) + 何時に〜ますか (asking about "
     "meal/bath time in someone else's home)",
@@ -99,22 +103,29 @@ tutor's system prompt for every session on this lesson, under the heading \
 guidance TO the tutor persona, not as a student-facing textbook page.
 
 CONTEXT — read carefully, it should shape every lesson:
-The two learners are siblings, ages 13-16, doing a short-term exchange \
-homestay in Japan. They will live with a Japanese host family that has \
-children the same age, arriving during Obon (mid-August). This means:
+The learner is ONE teenager (13-16) doing a short-term exchange homestay in \
+Japan, arriving during Obon (mid-August). IMPORTANT: the learner travels and \
+stays ALONE with their own host family — do NOT write scenarios about "two \
+siblings together." Address the learner in the singular ("you"). The host \
+family has children about the same age. This means:
 - It is SUMMER VACATION, not a regular school term — don't assume a daily \
   school schedule, class period, or "today's classes" framing.
 - Scenarios should default to homestay life: meeting the host family, \
-  meals together, house rules, going places with host siblings, local \
+  meals together, house rules, going places with the host kids, local \
   summer events — NOT a generic school-year or business-trip framing.
 - Where a lesson is about festivals/special days, prefer Obon specifically \
   (お盆, 盆踊り bon-odori, 提灯 lanterns, お墓参り visiting graves, 花火 \
   fireworks, 夏祭り summer festival, 浴衣 yukata, かき氷 shaved ice, スイカ \
   splitting) over generic year-round holidays.
-- Keep vocabulary general enough to fit either a mountain/river town or a \
-  coastal town — don't hard-code one specific region.
+- Keep locations GENERIC — say "your host town" / "your host family," never \
+  a specific city or region (learners are in different towns).
 - Learners are teenagers: keep it age-appropriate for 13-16, not little-kid \
   cutesy and not adult/business register.
+
+REGISTER — this matters for a homestay and every lesson must address it: \
+the learner speaks POLITELY (です/ます, おねがいします, おせわになります) to the \
+host PARENTS, but can be relaxed and CASUAL with the same-age host KIDS. \
+Teach both and note when to switch.
 
 GRAMMAR/VOCAB REGISTER: match the natural, spoken beginner Japanese style \
 used by NHK World's "Easy Japanese" course — plain, practical, high-frequency \
@@ -126,8 +137,8 @@ example sentences verbatim — this is original content inspired only by the \
 OUTPUT FORMAT — return ONLY the markdown below, no preamble, no code fences:
 
 ## Scenario
-One to two sentences setting the specific homestay/Obon-appropriate scene \
-for this lesson.
+One to two sentences setting the specific singular-learner homestay/Obon scene \
+for this lesson (one learner, one host family, generic town).
 
 ## Target vocabulary
 8-12 items, each: **word** (reading in hiragana/romaji) — English gloss. \
@@ -137,15 +148,19 @@ Pick words a genuine beginner needs for this scenario.
 2-4 short patterns built around the target grammar point, each with an \
 English gloss.
 
+## Register — who you're talking to
+2 short bullets: how to say it politely to the host parents vs casually to \
+the same-age host kids, with a mini-example of each.
+
 ## Example exchange
 A natural 3-5 turn sample dialogue between the tutor and the learner \
 demonstrating the target grammar in the lesson's scenario. Use 「Tutor:」 \
-and 「Learner:」 labels.
+and 「Learner:」 labels; where natural, show the polite-vs-casual contrast.
 
 ## Tutor notes
 2-3 bullet points: what mistakes to expect at this level, how to gently \
-elicit the can-do goals, and (if relevant) a one-line cultural note about \
-Obon or homestay etiquette worth mentioning in passing.
+elicit the can-do goals (leaning on the learner's own hobbies/interests \
+where natural), and a one-line cultural note about Obon or homestay etiquette.
 """
 
 

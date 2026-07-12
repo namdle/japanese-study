@@ -62,6 +62,15 @@ export function listLessonOptions(): Promise<LessonOption[]> {
   return apiRequest<LessonOption[]>('/api/sessions/lessons');
 }
 
+export interface LessonStudy {
+  lesson_id: number;
+  study_markdown: string;
+}
+
+export function getLessonStudy(lessonId: number): Promise<LessonStudy> {
+  return apiRequest<LessonStudy>(`/api/sessions/lessons/${lessonId}/study`);
+}
+
 export function startSession(opts?: {
   lesson_id?: number;
   mode?: SessionMode;

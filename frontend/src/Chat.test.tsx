@@ -107,6 +107,15 @@ function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respon
       : [];
     return Promise.resolve(jsonResponse(options));
   }
+  const studyMatch = url.match(/^\/api\/sessions\/lessons\/(\d+)\/study$/);
+  if (studyMatch && method === 'GET') {
+    return Promise.resolve(
+      jsonResponse({
+        lesson_id: Number.parseInt(studyMatch[1], 10),
+        study_markdown: '## Scenario\nYou arrive at your host family.\n\n## Target vocabulary\n- こんにちは',
+      }),
+    );
+  }
   if (url === '/api/sessions/start' && method === 'POST') {
     startedSessions++;
     const body = init?.body
@@ -222,6 +231,23 @@ describe('Practice page (session-aware)', () => {
       expect(screen.getByText('こんにちは!')).toBeInTheDocument();
     });
     expect(startedSessions).toBe(1);
+  });
+
+  it('reveals the collapsible lesson info when the toggle is clicked', async () => {
+    activeResponse = { active: null, next_lesson: makeLesson() };
+    render(<App />);
+
+    const toggle = await screen.findByRole('button', { name: /lesson info/i });
+    // Collapsed by default — content not present yet.
+    expect(screen.queryByText(/you arrive at your host family/i)).not.toBeInTheDocument();
+
+    fireEvent.click(toggle);
+
+    // Lazily fetched study markdown appears.
+    expect(
+      await screen.findByText(/you arrive at your host family/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: /target vocabulary/i })).toBeInTheDocument();
   });
 
   it('resumes the active session on page load', async () => {
