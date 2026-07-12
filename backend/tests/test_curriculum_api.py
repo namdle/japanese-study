@@ -40,11 +40,11 @@ def test_list_topics_returns_lessons_nested(client: TestClient) -> None:
     assert len(body) == len(TOPICS)
     # Topics are sorted by sort_order; first topic is Greetings.
     assert body[0]["code"] == "T01_GREETINGS"
-    # Each topic has 3 nested lessons (A1/A2/B1).
+    # Each topic has 4 nested lessons (two A1, one A2, one B1).
     for t in body:
-        assert len(t["lessons"]) == 3
+        assert len(t["lessons"]) == 4
         levels = sorted(lesson["level"] for lesson in t["lessons"])
-        assert levels == ["A1", "A2", "B1"]
+        assert levels == ["A1", "A1", "A2", "B1"]
 
 
 def test_get_lesson_returns_can_dos_and_no_plan_initially(client: TestClient) -> None:

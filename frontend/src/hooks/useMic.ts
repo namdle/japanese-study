@@ -4,6 +4,9 @@ export type MicState = 'idle' | 'requesting' | 'recording' | 'unsupported' | 'de
 
 interface UseMicOptions {
   onStop?: (audio: Blob) => void;
+  // When > 0, recording auto-stops after this many milliseconds. The user can
+  // still stop manually. 0 / undefined disables auto-stop.
+  autoStopMs?: number;
 }
 
 interface UseMic {
@@ -32,11 +35,23 @@ export function useMic(options: UseMicOptions = {}): UseMic {
   const chunksRef = useRef<Blob[]>([]);
   const mimeRef = useRef<string | undefined>(undefined);
   const onStopRef = useRef(options.onStop);
+  const autoStopMsRef = useRef(options.autoStopMs);
+  const autoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Keep the latest callback without re-creating start/stop on every render.
+  // Keep the latest callback/config without re-creating start/stop on every render.
   useEffect(() => {
     onStopRef.current = options.onStop;
   }, [options.onStop]);
+  useEffect(() => {
+    autoStopMsRef.current = options.autoStopMs;
+  }, [options.autoStopMs]);
+
+  const clearAutoStop = useCallback(() => {
+    if (autoStopTimerRef.current !== null) {
+      clearTimeout(autoStopTimerRef.current);
+      autoStopTimerRef.current = null;
+    }
+  }, []);
 
   const cleanupStream = useCallback(() => {
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -58,6 +73,7 @@ export function useMic(options: UseMicOptions = {}): UseMic {
         if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
       };
       recorder.onstop = () => {
+        clearAutoStop();
         const type = mime ?? recorder.mimeType ?? 'audio/webm';
         const blob = new Blob(chunksRef.current, { type });
         chunksRef.current = [];
@@ -66,6 +82,7 @@ export function useMic(options: UseMicOptions = {}): UseMic {
         onStopRef.current?.(blob);
       };
       recorder.onerror = (e) => {
+        clearAutoStop();
         setError(`Recorder error: ${(e as ErrorEvent).message ?? 'unknown'}`);
         cleanupStream();
         setState('idle');
@@ -73,6 +90,16 @@ export function useMic(options: UseMicOptions = {}): UseMic {
       recorderRef.current = recorder;
       recorder.start();
       setState('recording');
+
+      // Arm the auto-stop timer if enabled. The manual stop path clears it too.
+      const autoStopMs = autoStopMsRef.current;
+      if (autoStopMs && autoStopMs > 0) {
+        autoStopTimerRef.current = setTimeout(() => {
+          autoStopTimerRef.current = null;
+          const r = recorderRef.current;
+          if (r && r.state !== 'inactive') r.stop();
+        }, autoStopMs);
+      }
     } catch (err) {
       const e = err as DOMException;
       const denied = e?.name === 'NotAllowedError' || e?.name === 'SecurityError';
@@ -80,9 +107,10 @@ export function useMic(options: UseMicOptions = {}): UseMic {
       setState(denied ? 'denied' : 'idle');
       cleanupStream();
     }
-  }, [state, cleanupStream]);
+  }, [state, cleanupStream, clearAutoStop]);
 
   const stop = useCallback(() => {
+    clearAutoStop();
     const r = recorderRef.current;
     if (r && r.state !== 'inactive') {
       r.stop();
@@ -90,11 +118,12 @@ export function useMic(options: UseMicOptions = {}): UseMic {
       cleanupStream();
       setState('idle');
     }
-  }, [cleanupStream]);
+  }, [cleanupStream, clearAutoStop]);
 
   // Make sure we release the mic if the component unmounts mid-recording.
   useEffect(() => {
     return () => {
+      clearAutoStop();
       const r = recorderRef.current;
       if (r && r.state !== 'inactive') {
         try {
@@ -105,7 +134,7 @@ export function useMic(options: UseMicOptions = {}): UseMic {
       }
       cleanupStream();
     };
-  }, [cleanupStream]);
+  }, [cleanupStream, clearAutoStop]);
 
   return { state, start, stop, error };
 }

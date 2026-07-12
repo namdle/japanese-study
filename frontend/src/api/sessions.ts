@@ -38,6 +38,11 @@ export interface LessonInfo {
   topic_title_ja: string;
 }
 
+export interface LessonOption extends LessonInfo {
+  practiced_count: number;
+  last_practiced_at: string | null;
+}
+
 export interface SessionDetail {
   session: SessionMeta;
   lesson: LessonInfo | null;
@@ -51,6 +56,10 @@ export interface ActiveSession {
 
 export function getActiveSession(): Promise<ActiveSession> {
   return apiRequest<ActiveSession>('/api/sessions/active');
+}
+
+export function listLessonOptions(): Promise<LessonOption[]> {
+  return apiRequest<LessonOption[]>('/api/sessions/lessons');
 }
 
 export function startSession(opts?: {

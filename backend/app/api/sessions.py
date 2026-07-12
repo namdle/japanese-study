@@ -12,6 +12,7 @@ away and back resumes the active session via GET /api/sessions/active.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from collections.abc import Mapping
@@ -20,13 +21,19 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field
-from sqlalchemy import insert, select, update
+from sqlalchemy import func, insert, select, update
 from sqlalchemy.engine import Engine
 
 from app.api.chat import get_provider_for_user_dep
 from app.api.voice import get_speech_provider_dep
 from app.config import get_settings
-from app.db import lessons_table, session_turns_table, sessions_table
+from app.db import (
+    lesson_plans_table,
+    lessons_table,
+    session_turns_table,
+    sessions_table,
+    topics_table,
+)
 from app.deps import CurrentUser, EngineDep
 from app.llm.base import Message, build_tutor_system_prompt, parse_tutor_reply
 from app.session.orchestrator import (
@@ -35,6 +42,7 @@ from app.session.orchestrator import (
     pick_next_lesson,
 )
 from app.session.uploads import detect_image_mime, save_upload
+from app.speech.hints import build_phrase_hints
 from app.speech.base import SpeechProvider, TutorVoice
 
 logger = logging.getLogger(__name__)
@@ -82,6 +90,13 @@ class LessonInfoOut(BaseModel):
     can_dos: list[str]
     topic_title_en: str
     topic_title_ja: str
+
+
+class LessonOptionOut(LessonInfoOut):
+    """An approved lesson the learner can pick, with their practice history."""
+
+    practiced_count: int
+    last_practiced_at: datetime | None
 
 
 class SessionDetailOut(BaseModel):
@@ -195,6 +210,26 @@ def _load_session(engine: Engine, session_id: int) -> Mapping[str, object] | Non
         return conn.execute(
             select(sessions_table).where(sessions_table.c.id == session_id)
         ).mappings().one_or_none()
+
+
+def _session_phrase_hints(
+    engine: Engine, user: Mapping[str, object], session_row: Mapping[str, object]
+) -> list[str]:
+    """Speech-adaptation hints for a voice turn: learner name + lesson vocab."""
+    plan_markdown: str | None = None
+    plan_id = session_row.get("lesson_plan_id")
+    if plan_id is not None:
+        with engine.connect() as conn:
+            row = conn.execute(
+                select(lesson_plans_table.c.body_markdown).where(
+                    lesson_plans_table.c.id == plan_id
+                )
+            ).one_or_none()
+        if row is not None:
+            plan_markdown = row[0]
+    return build_phrase_hints(
+        name_ja=str(user.get("name_ja") or ""), plan_markdown=plan_markdown
+    )
 
 
 def _ensure_owned_active(
@@ -377,6 +412,84 @@ def get_active(user: CurrentUser, engine: EngineDep) -> ActiveSessionOut:
 def get_next_lesson(user: CurrentUser, engine: EngineDep) -> LessonInfoOut | None:
     pick = pick_next_lesson(engine, int(user["id"]))
     return _lesson_info(pick) if pick else None
+
+
+@router.get("/lessons", response_model=list[LessonOptionOut])
+def list_lesson_options(user: CurrentUser, engine: EngineDep) -> list[LessonOptionOut]:
+    """All approved lessons the learner can pick, with their practice history.
+
+    Ordered canonically (topic, then lesson). Practice stats count the
+    learner's *finished* sessions on each lesson (ended_at set), matching the
+    "completed" definition used by pick_next_lesson.
+    """
+    user_id = int(user["id"])
+
+    # Per-user finished-session stats, keyed by lesson_id.
+    with engine.connect() as conn:
+        stat_rows = conn.execute(
+            select(
+                sessions_table.c.lesson_id,
+                func.count().label("practiced_count"),
+                func.max(sessions_table.c.ended_at).label("last_practiced_at"),
+            )
+            .where(sessions_table.c.user_id == user_id)
+            .where(sessions_table.c.ended_at.is_not(None))
+            .where(sessions_table.c.lesson_id.is_not(None))
+            .group_by(sessions_table.c.lesson_id)
+        ).mappings().all()
+    stats = {r["lesson_id"]: r for r in stat_rows}
+
+    with engine.connect() as conn:
+        lesson_rows = conn.execute(
+            select(
+                lessons_table.c.id,
+                lessons_table.c.title_en,
+                lessons_table.c.title_ja,
+                lessons_table.c.level,
+                lessons_table.c.can_dos_json,
+                topics_table.c.title_en.label("topic_title_en"),
+                topics_table.c.title_ja.label("topic_title_ja"),
+            )
+            .select_from(
+                lesson_plans_table.join(
+                    lessons_table,
+                    lessons_table.c.id == lesson_plans_table.c.lesson_id,
+                ).join(
+                    topics_table,
+                    topics_table.c.id == lessons_table.c.topic_id,
+                )
+            )
+            .where(lesson_plans_table.c.status == "approved")
+            .order_by(
+                topics_table.c.sort_order,
+                lessons_table.c.sort_order,
+                lessons_table.c.id,
+            )
+        ).mappings().all()
+
+    options: list[LessonOptionOut] = []
+    for row in lesson_rows:
+        try:
+            can_dos = json.loads(str(row["can_dos_json"] or "[]"))
+            if not isinstance(can_dos, list):
+                can_dos = []
+        except json.JSONDecodeError:
+            can_dos = []
+        stat = stats.get(row["id"])
+        options.append(
+            LessonOptionOut(
+                id=int(row["id"]),
+                title_en=str(row["title_en"]),
+                title_ja=str(row["title_ja"]),
+                level=str(row["level"]),
+                can_dos=can_dos,
+                topic_title_en=str(row["topic_title_en"]),
+                topic_title_ja=str(row["topic_title_ja"]),
+                practiced_count=int(stat["practiced_count"]) if stat else 0,
+                last_practiced_at=stat["last_practiced_at"] if stat else None,
+            )
+        )
+    return options
 
 
 @router.post("/start", response_model=SessionDetailOut, status_code=status.HTTP_201_CREATED)
@@ -724,7 +837,10 @@ def voice_turn(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="audio file is empty")
 
     try:
-        transcript = speech.transcribe(audio_bytes)
+        transcript = speech.transcribe(
+            audio_bytes,
+            phrase_hints=_session_phrase_hints(engine, user, session_row),
+        )
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,

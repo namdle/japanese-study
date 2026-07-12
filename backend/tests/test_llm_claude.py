@@ -35,8 +35,8 @@ def test_claude_chat_calls_sdk_with_expected_args() -> None:
     kwargs = sdk.messages.create.call_args.kwargs
     assert kwargs["system"] == "You are Misa"
     assert kwargs["messages"] == [{"role": "user", "content": "やあ"}]
-    assert kwargs["temperature"] == 0.5
-    assert kwargs["model"] == "claude-sonnet-4-20250514"
+    assert "temperature" not in kwargs
+    assert kwargs["model"] == "claude-sonnet-5"
     assert kwargs["max_tokens"] == 1024
 
 

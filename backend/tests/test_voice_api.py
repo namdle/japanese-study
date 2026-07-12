@@ -43,7 +43,13 @@ class FakeSpeech(SpeechProvider):
         self.synth_calls: list[tuple[str, TutorVoice]] = []
         self.transcribe_calls: list[bytes] = []
 
-    def transcribe(self, audio: bytes, *, language: str = "ja-JP") -> str:  # noqa: ARG002
+    def transcribe(  # noqa: ARG002
+        self,
+        audio: bytes,
+        *,
+        language: str = "ja-JP",
+        phrase_hints: list[str] | None = None,
+    ) -> str:
         self.transcribe_calls.append(audio)
         return self.transcript
 

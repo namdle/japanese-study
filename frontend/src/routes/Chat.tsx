@@ -12,15 +12,37 @@ import { ApiError } from '../api/client';
 import {
   endSession,
   getActiveSession,
+  listLessonOptions,
   postTextTurn,
   postVoiceTurn,
   startSession,
   startSessionFromImage,
   type LessonInfo,
+  type LessonOption,
   type SessionDetail,
 } from '../api/sessions';
 import type { User } from '../api/users';
 import { useMic } from '../hooks/useMic';
+
+// Auto-stop on/off is remembered per profile in the browser.
+const autoStopKey = (userId: number): string => `autoStop:${userId}`;
+
+function readAutoStop(userId: number): boolean {
+  try {
+    return localStorage.getItem(autoStopKey(userId)) === '1';
+  } catch {
+    return false;
+  }
+}
+
+function formatPracticeStatus(opt: LessonOption): string {
+  if (opt.practiced_count === 0) return 'New';
+  const when = opt.last_practiced_at
+    ? new Date(opt.last_practiced_at).toLocaleDateString()
+    : null;
+  const times = opt.practiced_count === 1 ? 'once' : `×${opt.practiced_count}`;
+  return when ? `Practiced ${times} · last ${when}` : `Practiced ${times}`;
+}
 
 interface ChatProps {
   user: User;
@@ -32,6 +54,11 @@ export function Chat({ user }: ChatProps): JSX.Element {
   const [loadState, setLoadState] = useState<LoadState>('loading');
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [nextLesson, setNextLesson] = useState<LessonInfo | null>(null);
+  const [lessonOptions, setLessonOptions] = useState<LessonOption[] | null>(null);
+  const [selectedLessonId, setSelectedLessonId] = useState<number | null>(null);
+  const [autoStopEnabled, setAutoStopEnabled] = useState<boolean>(() =>
+    readAutoStop(user.id),
+  );
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState<'idle' | 'starting' | 'sending' | 'ending' | 'uploading'>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -52,8 +79,12 @@ export function Chat({ user }: ChatProps): JSX.Element {
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      const active = await getActiveSession();
+      const [active, options] = await Promise.all([
+        getActiveSession(),
+        listLessonOptions(),
+      ]);
       setNextLesson(active.next_lesson);
+      setLessonOptions(options);
       if (active.active) {
         setDetail(active.active);
         setLoadState('active');
@@ -67,6 +98,17 @@ export function Chat({ user }: ChatProps): JSX.Element {
       setLoadState('error');
     }
   }, []);
+
+  // Default the lesson selection to the recommended lesson (or the first
+  // available) once options load, unless the learner has already chosen one.
+  useEffect(() => {
+    if (selectedLessonId !== null) return;
+    if (nextLesson) {
+      setSelectedLessonId(nextLesson.id);
+    } else if (lessonOptions && lessonOptions.length > 0) {
+      setSelectedLessonId(lessonOptions[0].id);
+    }
+  }, [nextLesson, lessonOptions, selectedLessonId]);
 
   useEffect(() => {
     void refresh();
@@ -98,7 +140,10 @@ export function Chat({ user }: ChatProps): JSX.Element {
     setError(null);
     setEndSummary(null);
     try {
-      const started = await startSession({ mode: pendingMode });
+      const started = await startSession({
+        mode: pendingMode,
+        lesson_id: selectedLessonId ?? undefined,
+      });
       setDetail(started);
       setLoadState('active');
     } catch (err) {
@@ -141,6 +186,8 @@ export function Chat({ user }: ChatProps): JSX.Element {
       const ended = await endSession(detail.session.id);
       lastPlayedAudioUrl.current = null;
       setEndSummary(ended.summary ?? null);
+      // Re-default the picker to the new recommended lesson.
+      setSelectedLessonId(null);
       await refresh();
     } catch (err) {
       setError(err instanceof ApiError ? err.detail : (err as Error).message);
@@ -164,7 +211,19 @@ export function Chat({ user }: ChatProps): JSX.Element {
     }
   }, []);
 
-  const mic = useMic({ onStop: handleVoiceTurn });
+  const mic = useMic({
+    onStop: handleVoiceTurn,
+    autoStopMs: autoStopEnabled ? user.auto_stop_seconds * 1000 : 0,
+  });
+
+  const toggleAutoStop = (enabled: boolean) => {
+    setAutoStopEnabled(enabled);
+    try {
+      localStorage.setItem(autoStopKey(user.id), enabled ? '1' : '0');
+    } catch {
+      /* storage may be unavailable; keep the in-memory state */
+    }
+  };
 
   const onTextSubmit = async (e: FormEvent | KeyboardEvent) => {
     e.preventDefault();
@@ -205,6 +264,8 @@ export function Chat({ user }: ChatProps): JSX.Element {
           ? 'Mic unsupported in this browser'
           : 'Start recording';
   const micDisabled = sending || mic.state === 'unsupported' || mic.state === 'requesting';
+  const selectedLesson =
+    lessonOptions?.find((o) => o.id === selectedLessonId) ?? null;
 
   // ---------------------------------------------------------------------- //
   // Rendering
@@ -243,15 +304,54 @@ export function Chat({ user }: ChatProps): JSX.Element {
           </section>
         )}
 
-        {nextLesson ? (
+        {lessonOptions && lessonOptions.length > 0 ? (
           <section className="lesson-preview">
-            <h2>Next up: {nextLesson.title_en}</h2>
-            <p className="lesson-preview__meta">
-              {nextLesson.topic_title_en} · Level {nextLesson.level}
-            </p>
-            {nextLesson.can_dos.length > 0 && (
+            <h2>Choose a lesson</h2>
+            <ul className="lesson-picker" aria-label="Lessons">
+              {lessonOptions.map((opt) => {
+                const selected = opt.id === selectedLessonId;
+                const recommended = opt.id === nextLesson?.id;
+                return (
+                  <li key={opt.id}>
+                    <label
+                      className={`lesson-picker__item ${
+                        selected ? 'lesson-picker__item--selected' : ''
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="lesson"
+                        value={opt.id}
+                        checked={selected}
+                        onChange={() => setSelectedLessonId(opt.id)}
+                      />
+                      <span className="lesson-picker__title">
+                        {opt.title_en}
+                        {recommended && (
+                          <span className="badge badge--accent">Recommended</span>
+                        )}
+                      </span>
+                      <span className="lesson-picker__meta">
+                        {opt.topic_title_en} · Level {opt.level}
+                      </span>
+                      <span
+                        className={`lesson-picker__status ${
+                          opt.practiced_count === 0
+                            ? 'lesson-picker__status--new'
+                            : ''
+                        }`}
+                      >
+                        {formatPracticeStatus(opt)}
+                      </span>
+                    </label>
+                  </li>
+                );
+              })}
+            </ul>
+
+            {selectedLesson && selectedLesson.can_dos.length > 0 && (
               <ul className="can-dos">
-                {nextLesson.can_dos.map((c, i) => (
+                {selectedLesson.can_dos.map((c, i) => (
                   <li key={i}>{c}</li>
                 ))}
               </ul>
@@ -404,6 +504,19 @@ export function Chat({ user }: ChatProps): JSX.Element {
           >
             {mic.state === 'recording' ? '■ Stop' : '🎤 Speak'}
           </button>
+          {mic.state !== 'unsupported' && (
+            <label
+              className="auto-stop-toggle"
+              title={`Tap Speak to start; recording ends automatically after ${user.auto_stop_seconds}s. You can still stop early.`}
+            >
+              <input
+                type="checkbox"
+                checked={autoStopEnabled}
+                onChange={(e) => toggleAutoStop(e.target.checked)}
+              />
+              <span>Auto-stop ({user.auto_stop_seconds}s)</span>
+            </label>
+          )}
           <button
             type="button"
             className="end-session-button"

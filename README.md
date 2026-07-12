@@ -193,13 +193,14 @@ docker build -t japanese-study .
 docker run -d \
   --name japanese-study \
   --restart unless-stopped \
-  -p 3000:8000 \
+  -p 3001:8000 \
   -v /mnt/user/appdata/japanese-study/data:/app/data \
   --env-file /mnt/user/appdata/japanese-study/.env \
   japanese-study
 ```
 
-The app is now at `http://YOUR_NAS_IP:3000`.
+The app is now at `http://YOUR_NAS_IP:3001` (host port 3001 matches the
+Cloudflare tunnel route; 3000 is used by another app).
 
 ### Subsequent deploys (from your laptop)
 
@@ -223,22 +224,55 @@ docker exec -it japanese-study python seed_users.py list
 
 ## Enabling remote access (Cloudflare Tunnel + Access)
 
-When you're ready to access the app from outside your home network:
+If you already run a locally-managed `cloudflared` tunnel on the NAS,
+you can add this app as a new ingress rule — no new tunnel needed.
 
-1. **Set up a Cloudflare Tunnel** pointing to `http://localhost:3000` on
-   the NAS. You can run `cloudflared` as a Docker container alongside the
-   app, or install it directly on Unraid via Community Apps.
+### Step 1 — Add an ingress rule on the NAS
 
-2. **Enable Cloudflare Access** (free tier) on the tunnel's hostname:
-   - Go to Cloudflare Zero Trust → Access → Applications → Add.
-   - Set the application URL to your tunnel hostname.
-   - Add an **email allowlist** policy with your family's email addresses.
-   - This provides the real auth boundary — the app itself stays
-     password-free internally.
+SSH into the NAS and edit your cloudflared config (typically
+`/root/.cloudflared/config.yml`). Add a new `hostname` block **before**
+the catch-all `http_status:404` line:
 
-3. **Result**: family members authenticate via email (one-time code) at
-   the Cloudflare edge. Once through, the app works exactly as on LAN.
-   No passwords stored in the app, no JWT, no session cookies to manage.
+```yaml
+tunnel: <YOUR_TUNNEL_ID>
+credentials-file: /etc/cloudflared/<YOUR_TUNNEL_ID>.json
+
+ingress:
+  # ... your existing rules ...
+  - hostname: japanese.yourdomain.com    # ← add this
+    service: http://localhost:3001
+  - service: http_status:404
+```
+
+Then restart cloudflared to pick up the change:
+
+```bash
+docker restart cloudflared
+```
+
+### Step 2 — Add a DNS CNAME record in Cloudflare
+
+In the Cloudflare dashboard → **your domain → DNS → Records**, add:
+
+| Type  | Name       | Target                                    | Proxy |
+|-------|------------|-------------------------------------------|-------|
+| CNAME | `japanese` | `<YOUR_TUNNEL_ID>.cfargotunnel.com`       | ✅ On |
+
+The app is now at `https://japanese.yourdomain.com`.
+
+> **Why this matters for the mic:** Chrome only allows microphone access
+> (`getUserMedia`) on secure contexts (HTTPS or localhost). Plain HTTP on
+> the LAN will block the mic; the Cloudflare Tunnel provides HTTPS
+> automatically.
+
+### Step 3 — Enable Cloudflare Access (optional but recommended)
+
+Gate the public URL so only family members can reach it:
+
+- Cloudflare dashboard → **Zero Trust → Access → Applications → Add**
+- Application URL: `https://japanese.yourdomain.com`
+- Policy: **Allow**, rule type **Emails** — add each family member's address
+- Family members get a one-time email code; the app itself stays password-free
 
 This keeps the app simple while providing proper security for remote
 access. The trust-based profile picker is fine because Cloudflare Access

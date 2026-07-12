@@ -12,6 +12,7 @@ function makeUser(overrides: Partial<User>): User {
   return {
     id: nextId++,
     name: 'Anon',
+    name_ja: '',
     is_admin: false,
     level: 'A1',
     voice: 'Misa',
@@ -21,6 +22,7 @@ function makeUser(overrides: Partial<User>): User {
     explanation_language: 'en',
     show_hiragana: false,
     show_english: false,
+    auto_stop_seconds: 7,
     created_at: new Date().toISOString(),
     ...overrides,
   };

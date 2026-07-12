@@ -32,6 +32,7 @@ class UserOut(BaseModel):
 
     id: int
     name: str
+    name_ja: str
     is_admin: bool
     level: ProficiencyLevel
     voice: TutorVoice
@@ -41,6 +42,7 @@ class UserOut(BaseModel):
     explanation_language: ExplanationLanguage
     show_hiragana: bool
     show_english: bool
+    auto_stop_seconds: int
     created_at: datetime
 
 
@@ -63,6 +65,7 @@ class UserUpdate(BaseModel):
     """Body for PATCH /api/users/{id}. All fields optional."""
 
     name: str | None = None
+    name_ja: str | None = None
     is_admin: bool | None = None
     level: ProficiencyLevel | None = None
     voice: TutorVoice | None = None
@@ -72,6 +75,7 @@ class UserUpdate(BaseModel):
     explanation_language: ExplanationLanguage | None = None
     show_hiragana: bool | None = None
     show_english: bool | None = None
+    auto_stop_seconds: int | None = None
 
     @field_validator("name")
     @classmethod
@@ -79,6 +83,25 @@ class UserUpdate(BaseModel):
         if value is None:
             return value
         return _normalized_name(value)
+
+    @field_validator("name_ja")
+    @classmethod
+    def _validate_name_ja(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        cleaned = value.strip()
+        if len(cleaned) > 40:
+            raise ValueError("name_ja must be 40 characters or fewer")
+        return cleaned
+
+    @field_validator("auto_stop_seconds")
+    @classmethod
+    def _validate_auto_stop(cls, value: int | None) -> int | None:
+        if value is None:
+            return value
+        if not 3 <= value <= 30:
+            raise ValueError("auto_stop_seconds must be between 3 and 30")
+        return value
 
 
 class OkResponse(BaseModel):

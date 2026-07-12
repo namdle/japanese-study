@@ -20,6 +20,12 @@ export function Settings({ currentUser, onChanged }: SettingsProps): JSX.Element
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<{ id: number; name: string } | null>(null);
+  // Local draft for the free-text "name in Japanese" field; committed on blur
+  // so we don't PATCH on every keystroke.
+  const [nameJa, setNameJa] = useState(currentUser.name_ja);
+  useEffect(() => {
+    setNameJa(currentUser.name_ja);
+  }, [currentUser.name_ja]);
 
   const reload = () => {
     listUsers()
@@ -182,6 +188,21 @@ export function Settings({ currentUser, onChanged }: SettingsProps): JSX.Element
       <section className="preferences-section">
         <h2>Your preferences</h2>
         <div className="preferences-grid">
+          <label htmlFor="pref-name-ja">Name in Japanese (biases speech recognition)</label>
+          <input
+            id="pref-name-ja"
+            type="text"
+            lang="ja"
+            value={nameJa}
+            placeholder="e.g. ナム"
+            maxLength={40}
+            onChange={(e) => setNameJa(e.target.value)}
+            onBlur={() => {
+              const trimmed = nameJa.trim();
+              if (trimmed !== currentUser.name_ja) handlePrefChange({ name_ja: trimmed });
+            }}
+          />
+
           <label htmlFor="pref-voice">Tutor voice</label>
           <select
             id="pref-voice"
@@ -283,6 +304,22 @@ export function Settings({ currentUser, onChanged }: SettingsProps): JSX.Element
             <option value="B1">B1 — Intermediate</option>
             <option value="B2">B2 — Upper Intermediate</option>
             <option value="C1">C1 — Advanced</option>
+          </select>
+
+          <label htmlFor="pref-auto-stop">Auto-stop recording after</label>
+          <select
+            id="pref-auto-stop"
+            value={currentUser.auto_stop_seconds}
+            onChange={(e) =>
+              handlePrefChange({ auto_stop_seconds: Number(e.target.value) })
+            }
+          >
+            <option value={3}>3 seconds</option>
+            <option value={5}>5 seconds</option>
+            <option value={7}>7 seconds</option>
+            <option value={10}>10 seconds</option>
+            <option value={15}>15 seconds</option>
+            <option value={20}>20 seconds</option>
           </select>
         </div>
       </section>

@@ -28,6 +28,8 @@ def test_create_user_returns_full_profile(client: TestClient) -> None:
     assert body["explanation_language"] == "en"
     assert body["show_hiragana"] is False
     assert body["show_english"] is False
+    assert body["auto_stop_seconds"] == 7
+    assert body["name_ja"] == ""
     assert "created_at" in body
 
 
@@ -66,6 +68,35 @@ def test_patch_user_updates_fields(client: TestClient) -> None:
     assert body["voice"] == "Hiro"
     assert body["level"] == "A2"
     assert body["is_admin"] is True
+
+
+def test_patch_user_name_ja(client: TestClient) -> None:
+    created = client.post("/api/users", json={"name": "Nam"}).json()
+    response = client.patch(f"/api/users/{created['id']}", json={"name_ja": "  ナム  "})
+    assert response.status_code == 200
+    # Trimmed on the way in.
+    assert response.json()["name_ja"] == "ナム"
+
+
+def test_patch_user_auto_stop_seconds_valid(client: TestClient) -> None:
+    created = client.post("/api/users", json={"name": "Kid"}).json()
+    response = client.patch(
+        f"/api/users/{created['id']}", json={"auto_stop_seconds": 10}
+    )
+    assert response.status_code == 200
+    assert response.json()["auto_stop_seconds"] == 10
+
+
+def test_patch_user_auto_stop_seconds_out_of_range(client: TestClient) -> None:
+    created = client.post("/api/users", json={"name": "Kid"}).json()
+    assert (
+        client.patch(f"/api/users/{created['id']}", json={"auto_stop_seconds": 0}).status_code
+        == 422
+    )
+    assert (
+        client.patch(f"/api/users/{created['id']}", json={"auto_stop_seconds": 999}).status_code
+        == 422
+    )
 
 
 def test_patch_user_400_when_no_fields(client: TestClient) -> None:

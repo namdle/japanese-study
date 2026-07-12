@@ -1,17 +1,23 @@
 """Seed the kid-friendly curriculum taxonomy.
 
-Twelve topics covering everyday family/school/social life, each with three
-lessons at A1, A2, and B1. Can-do statements are intentionally generic and
-original — they reflect the *kind* of practice without copying any
-copyrighted course material.
+Twelve topics covering everyday family/school/social life. Each topic has
+two A1 lessons (the second grammar seed informed by NHK World "Easy
+Japanese"'s scope-and-sequence, reframed for an exchange-student homestay
+during Obon), plus one A2 and one B1 lesson. Can-do statements are
+intentionally generic and original — they reflect the *kind* of practice
+without copying any copyrighted course material.
 
 The seed function is idempotent: running it on an existing DB inserts only
-missing topics/lessons and leaves user-authored plans alone.
+missing topics/lessons and leaves user-authored plans alone. Lesson codes
+are `{topic_code}_{level}` for a topic's first lesson at a level (preserving
+existing codes) and `{topic_code}_{level}{letter}` for subsequent lessons at
+the same level, e.g. `T01_GREETINGS_A1` then `T01_GREETINGS_A1b`.
 """
 
 from __future__ import annotations
 
 import json
+from collections import Counter
 from collections.abc import Iterable
 
 from sqlalchemy import insert, select, update
@@ -107,6 +113,10 @@ LESSONS: list[tuple[str, str, str, str, list[str]]] = [
         "Greet someone using simple expressions",
         "Introduce yourself with your name and where you're from",
     ]),
+    ("T01_GREETINGS", "A1", "Nice to meet you", "はじめまして", [
+        "Introduce yourself politely when meeting a host family for the first time",
+        "Say a simple thank-you for their hospitality",
+    ]),
     ("T01_GREETINGS", "A2", "Meeting new friends", "新しい友だちに会う", [
         "Make small talk after a greeting",
         "Ask what someone likes to do",
@@ -119,6 +129,10 @@ LESSONS: list[tuple[str, str, str, str, list[str]]] = [
     ("T02_FAMILY", "A1", "My family", "家族", [
         "Say how many people are in your family",
         "Name each family member",
+    ]),
+    ("T02_FAMILY", "A1", "This is my family", "わたしの家族です", [
+        "Introduce one family member with a simple detail",
+        "Ask how many people are in someone else's family",
     ]),
     ("T02_FAMILY", "A2", "What we do at home", "家ですること", [
         "Describe a typical evening at home",
@@ -133,6 +147,10 @@ LESSONS: list[tuple[str, str, str, str, list[str]]] = [
         "Say what grade or class you're in",
         "Name a couple of subjects you study",
     ]),
+    ("T03_SCHOOL", "A1", "My summer vacation", "夏休み", [
+        "Say what grade you're in",
+        "Talk about summer vacation and homework",
+    ]),
     ("T03_SCHOOL", "A2", "A day at school", "学校の一日", [
         "Talk about your school schedule",
         "Say which subject is your favorite and why",
@@ -145,6 +163,10 @@ LESSONS: list[tuple[str, str, str, str, list[str]]] = [
     ("T04_FRIENDS", "A1", "My friend", "友だち", [
         "Introduce a friend by name",
         "Say one thing your friend likes",
+    ]),
+    ("T04_FRIENDS", "A1", "Let's do it together", "いっしょにやろう", [
+        "Invite someone to do something together",
+        "Agree enthusiastically to a suggestion",
     ]),
     ("T04_FRIENDS", "A2", "Hanging out", "あそぶ", [
         "Make plans to do something together",
@@ -159,6 +181,10 @@ LESSONS: list[tuple[str, str, str, str, list[str]]] = [
         "Say something you like to do",
         "Ask what someone else likes",
     ]),
+    ("T05_HOBBIES", "A1", "I want to try it", "やってみたいです", [
+        "Say you want to try a new hobby or activity",
+        "Ask someone to show you how",
+    ]),
     ("T05_HOBBIES", "A2", "Free-time plans", "自由時間の予定", [
         "Talk about what you usually do on weekends",
         "Suggest a hobby to a friend",
@@ -171,6 +197,10 @@ LESSONS: list[tuple[str, str, str, str, list[str]]] = [
     ("T06_FOOD", "A1", "Favorite food", "好きな食べ物", [
         "Name a food you like",
         "Order something simple at a restaurant or shop",
+    ]),
+    ("T06_FOOD", "A1", "At the dinner table", "ばんごはん", [
+        "Say what food you like at a family meal",
+        "Politely say you can't eat something",
     ]),
     ("T06_FOOD", "A2", "Cooking at home", "家で料理", [
         "Talk about a dish you can make",
@@ -185,6 +215,10 @@ LESSONS: list[tuple[str, str, str, str, list[str]]] = [
         "Tell what time you wake up and go to bed",
         "Describe one thing you do every morning",
     ]),
+    ("T07_DAILY", "A1", "Life with my host family", "ホストファミリーとの毎日", [
+        "Describe something you're doing right now",
+        "Ask what time meals happen",
+    ]),
     ("T07_DAILY", "A2", "Busy days", "いそがしい日", [
         "Talk through a busy weekday",
         "Say what you do after dinner",
@@ -197,6 +231,10 @@ LESSONS: list[tuple[str, str, str, str, list[str]]] = [
     ("T08_TRAVEL", "A1", "Where I want to go", "行きたい場所", [
         "Name a place you'd like to visit",
         "Say one reason why",
+    ]),
+    ("T08_TRAVEL", "A1", "Where is it?", "どこですか", [
+        "Ask where a place is nearby",
+        "Understand a simple direction",
     ]),
     ("T08_TRAVEL", "A2", "A short trip", "ちょっとした旅", [
         "Describe a short trip you took",
@@ -211,6 +249,10 @@ LESSONS: list[tuple[str, str, str, str, list[str]]] = [
         "Name a holiday you celebrate",
         "Say what you usually do on that day",
     ]),
+    ("T09_FESTIVALS", "A1", "What are you wearing?", "なにを着ていますか", [
+        "Describe simple festival clothing and colors",
+        "Say what you're wearing to a summer festival",
+    ]),
     ("T09_FESTIVALS", "A2", "Festival foods", "お祭りの食べ物", [
         "Describe foods or treats at a festival",
         "Talk about wearing special clothes",
@@ -223,6 +265,10 @@ LESSONS: list[tuple[str, str, str, str, list[str]]] = [
     ("T10_ANIME", "A1", "Favorite character", "好きなキャラ", [
         "Name a favorite anime, manga, or game character",
         "Say what they look like in simple terms",
+    ]),
+    ("T10_ANIME", "A1", "It's so cool!", "すごいですね", [
+        "Give a simple positive reaction",
+        "Say what makes a character or story exciting",
     ]),
     ("T10_ANIME", "A2", "What I'm watching", "今見ているもの", [
         "Describe an anime or show you're following",
@@ -237,6 +283,10 @@ LESSONS: list[tuple[str, str, str, str, list[str]]] = [
         "Say a sport you enjoy doing or watching",
         "Ask what sport someone else likes",
     ]),
+    ("T11_SPORTS", "A1", "I played it yesterday", "きのうしました", [
+        "Say an activity you did recently",
+        "Ask someone what they did",
+    ]),
     ("T11_SPORTS", "A2", "Playing together", "いっしょにやる", [
         "Suggest playing a sport together",
         "Talk about the last game you played or watched",
@@ -249,6 +299,10 @@ LESSONS: list[tuple[str, str, str, str, list[str]]] = [
     ("T12_PETS", "A1", "My pet", "ペット", [
         "Say what kind of pet you have or want",
         "Describe its color and size",
+    ]),
+    ("T12_PETS", "A1", "Please don't...", "しないでください", [
+        "Give a simple gentle request or rule",
+        "Understand a simple house rule",
     ]),
     ("T12_PETS", "A2", "Daily life with a pet", "ペットとの毎日", [
         "Talk about how you take care of a pet",
@@ -292,9 +346,20 @@ def seed_curriculum(engine: Engine) -> dict[str, int]:
     code_to_id = {r["code"]: r["id"] for r in topic_rows}
 
     existing_lesson_codes = _existing_codes(engine, lessons_table)
+
+    # A (topic_code, level) pair may now have more than one lesson (e.g. two
+    # A1 lessons per topic). The first occurrence keeps the original
+    # `{topic}_{level}` code so existing rows/plans aren't orphaned; later
+    # occurrences get a lettered suffix.
+    level_occurrence: Counter[tuple[str, str]] = Counter()
+
     lesson_rows: list[dict] = []
     for sort_idx, (topic_code, level, title_en, title_ja, can_dos) in enumerate(LESSONS):
-        lesson_code = f"{topic_code}_{level}"
+        key = (topic_code, level)
+        level_occurrence[key] += 1
+        occurrence = level_occurrence[key]
+        suffix = "" if occurrence == 1 else chr(ord("a") + occurrence - 2)
+        lesson_code = f"{topic_code}_{level}{suffix}"
         if lesson_code in existing_lesson_codes:
             continue
         lesson_rows.append(

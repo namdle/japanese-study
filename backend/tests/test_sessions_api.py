@@ -43,8 +43,16 @@ class FakeSpeech(SpeechProvider):
 
     def __init__(self) -> None:
         self.transcript = "こんにちは"
+        self.last_phrase_hints: list[str] | None = None
 
-    def transcribe(self, audio: bytes, *, language: str = "ja-JP") -> str:  # noqa: ARG002
+    def transcribe(  # noqa: ARG002
+        self,
+        audio: bytes,
+        *,
+        language: str = "ja-JP",
+        phrase_hints: list[str] | None = None,
+    ) -> str:
+        self.last_phrase_hints = phrase_hints
         return self.transcript
 
     def synthesize(self, text: str, *, voice: TutorVoice, language: str = "ja-JP"):  # noqa: ARG002
@@ -210,6 +218,37 @@ def test_voice_turn_persists_audio_and_transcript(session_setup) -> None:
     assert audio_resp.content == b"FAKE_MP3"
 
 
+def test_voice_turn_passes_name_and_vocab_phrase_hints(session_setup) -> None:
+    client, _, speech, admin_id, learner_id = session_setup
+    learner_headers = {"X-User-Id": str(learner_id)}
+    # Give the learner a Japanese name so STT can be biased toward it.
+    client.patch(f"/api/users/{learner_id}", json={"name_ja": "ソラ"})
+
+    # Approve a lesson whose plan carries a Target vocabulary section.
+    topics = client.get("/api/curriculum/topics").json()
+    lesson_id = topics[0]["lessons"][0]["id"]
+    admin_headers = {"X-User-Id": str(admin_id)}
+    client.put(
+        f"/api/curriculum/lessons/{lesson_id}/plan",
+        json={"body_markdown": "## Target vocabulary\n- **はじめまして** (x) — hi\n"},
+        headers=admin_headers,
+    )
+    client.post(f"/api/curriculum/lessons/{lesson_id}/plan/approve", headers=admin_headers)
+
+    started = client.post(
+        "/api/sessions/start", json={"lesson_id": lesson_id}, headers=learner_headers
+    ).json()
+    client.post(
+        f"/api/sessions/{started['session']['id']}/turn-audio",
+        files={"audio": ("rec.webm", io.BytesIO(b"audio-bytes"), "audio/webm")},
+        headers=learner_headers,
+    )
+
+    assert speech.last_phrase_hints is not None
+    assert "ソラ" in speech.last_phrase_hints  # learner name
+    assert "はじめまして" in speech.last_phrase_hints  # lesson vocab
+
+
 def test_end_session_sets_ended_at(session_setup) -> None:
     client, _, _, admin_id, learner_id = session_setup
     _approve_first_lesson(client, admin_id)
@@ -317,6 +356,58 @@ def test_picker_skips_completed_lessons(session_setup) -> None:
         "/api/sessions/next-lesson", headers={"X-User-Id": str(learner_id)}
     ).json()
     assert next_b["id"] == lesson_b
+
+
+def test_lesson_options_empty_when_no_plans(session_setup) -> None:
+    client, _, _, _, learner_id = session_setup
+    body = client.get(
+        "/api/sessions/lessons", headers={"X-User-Id": str(learner_id)}
+    ).json()
+    assert body == []
+
+
+def test_lesson_options_marks_new_and_practiced(session_setup) -> None:
+    client, _, _, admin_id, learner_id = session_setup
+    lesson_id = _approve_first_lesson(client, admin_id)
+    learner_headers = {"X-User-Id": str(learner_id)}
+
+    # Freshly approved lesson: appears, never practiced.
+    options = client.get("/api/sessions/lessons", headers=learner_headers).json()
+    assert len(options) == 1
+    assert options[0]["id"] == lesson_id
+    assert options[0]["practiced_count"] == 0
+    assert options[0]["last_practiced_at"] is None
+
+    # Start + end a session on it -> now counts as practiced once.
+    started = client.post(
+        "/api/sessions/start", json={"lesson_id": lesson_id}, headers=learner_headers
+    ).json()
+    client.post(
+        f"/api/sessions/{started['session']['id']}/end", headers=learner_headers
+    )
+
+    options = client.get("/api/sessions/lessons", headers=learner_headers).json()
+    assert options[0]["practiced_count"] == 1
+    assert options[0]["last_practiced_at"] is not None
+
+
+def test_lesson_options_are_per_user(session_setup) -> None:
+    client, _, _, admin_id, learner_id = session_setup
+    lesson_id = _approve_first_lesson(client, admin_id)
+
+    # Learner practices; the admin's view of the same lesson stays "new".
+    learner_headers = {"X-User-Id": str(learner_id)}
+    started = client.post(
+        "/api/sessions/start", json={"lesson_id": lesson_id}, headers=learner_headers
+    ).json()
+    client.post(
+        f"/api/sessions/{started['session']['id']}/end", headers=learner_headers
+    )
+
+    admin_options = client.get(
+        "/api/sessions/lessons", headers={"X-User-Id": str(admin_id)}
+    ).json()
+    assert admin_options[0]["practiced_count"] == 0
 
 
 def test_start_with_three_phase_mode_records_mode_and_in_prompt(session_setup) -> None:

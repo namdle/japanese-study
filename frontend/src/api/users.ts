@@ -10,6 +10,7 @@ export type ExplanationLanguage = 'en' | 'ja';
 export interface User {
   id: number;
   name: string;
+  name_ja: string;
   is_admin: boolean;
   level: ProficiencyLevel;
   voice: TutorVoice;
@@ -19,11 +20,13 @@ export interface User {
   explanation_language: ExplanationLanguage;
   show_hiragana: boolean;
   show_english: boolean;
+  auto_stop_seconds: number;
   created_at: string;
 }
 
 export interface UserUpdate {
   name?: string;
+  name_ja?: string;
   is_admin?: boolean;
   level?: ProficiencyLevel;
   voice?: TutorVoice;
@@ -33,6 +36,7 @@ export interface UserUpdate {
   explanation_language?: ExplanationLanguage;
   show_hiragana?: boolean;
   show_english?: boolean;
+  auto_stop_seconds?: number;
 }
 
 export function listUsers(): Promise<User[]> {

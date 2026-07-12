@@ -40,6 +40,31 @@ def test_transcribe_returns_empty_when_no_results() -> None:
     assert provider.transcribe(b"x") == ""
 
 
+def test_transcribe_passes_phrase_hints_as_boosted_context() -> None:
+    stt = MagicMock()
+    stt.recognize.return_value = SimpleNamespace(results=[])
+    provider = GCloudSpeechProvider(stt_client=stt, tts_client=MagicMock())
+
+    provider.transcribe(b"x", phrase_hints=["ナム", "はじめまして", "ナム"])
+
+    config = stt.recognize.call_args.kwargs["config"]
+    assert len(config.speech_contexts) == 1
+    ctx = config.speech_contexts[0]
+    # De-duplicated, order preserved, and boosted.
+    assert list(ctx.phrases) == ["ナム", "はじめまして"]
+    assert ctx.boost > 0
+
+
+def test_transcribe_no_context_without_hints() -> None:
+    stt = MagicMock()
+    stt.recognize.return_value = SimpleNamespace(results=[])
+    provider = GCloudSpeechProvider(stt_client=stt, tts_client=MagicMock())
+
+    provider.transcribe(b"x")
+
+    assert list(stt.recognize.call_args.kwargs["config"].speech_contexts) == []
+
+
 # --------------------------------------------------------------------------- #
 # split_by_language
 # --------------------------------------------------------------------------- #

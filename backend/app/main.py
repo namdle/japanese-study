@@ -11,6 +11,21 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+# Load .env from the repo root so all provider API keys (ANTHROPIC_API_KEY,
+# OPENAI_API_KEY, etc.) reach os.environ before any adapter is instantiated.
+# pydantic-settings only reads APP_* vars from .env; this covers the rest.
+load_dotenv(Path(__file__).parent.parent.parent / ".env")
+
+# python-dotenv doesn't expand shell variables like $HOME, so do it manually.
+import os as _os
+for _k, _v in list(_os.environ.items()):
+    _expanded = _os.path.expandvars(_v)
+    if _expanded != _v:
+        _os.environ[_k] = _expanded
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware

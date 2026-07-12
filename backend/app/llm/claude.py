@@ -15,7 +15,7 @@ import anthropic
 from app.llm.base import ChatResponse, LLMProvider, Message
 from app.session.uploads import detect_image_mime
 
-DEFAULT_MODEL = "claude-sonnet-4-20250514"
+DEFAULT_MODEL = "claude-sonnet-5"
 DEFAULT_MAX_TOKENS = 1024
 
 
@@ -85,7 +85,6 @@ class ClaudeProvider(LLMProvider):
             system=system,
             messages=anthropic_messages,
             max_tokens=self._max_tokens,
-            temperature=temperature,
         )
         text = "".join(
             getattr(block, "text", "") for block in response.content

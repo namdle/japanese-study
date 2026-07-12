@@ -41,16 +41,31 @@ class OpenAISpeechProvider(SpeechProvider):
                 )
             self._client = openai.OpenAI(api_key=resolved_key)
 
-    def transcribe(self, audio: bytes, *, language: str = "ja-JP") -> str:
+    def transcribe(
+        self,
+        audio: bytes,
+        *,
+        language: str = "ja-JP",
+        phrase_hints: list[str] | None = None,
+    ) -> str:
         # Whisper expects a file-like object with a name hint for format detection.
         audio_file = io.BytesIO(audio)
         audio_file.name = "recording.webm"
         # language param for Whisper is ISO 639-1 (e.g., "ja").
         lang_code = language.split("-")[0] if "-" in language else language
+        # Whisper biases toward words that appear in `prompt`; feed it the
+        # expected vocabulary (learner name, lesson words) so near-homophones
+        # like ナム vs 眠い resolve correctly.
+        kwargs: dict[str, object] = {}
+        if phrase_hints:
+            deduped = list(dict.fromkeys(h for h in phrase_hints if h and h.strip()))
+            if deduped:
+                kwargs["prompt"] = "、".join(deduped)
         response = self._client.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,
             language=lang_code,
+            **kwargs,
         )
         return (response.text or "").strip()
 

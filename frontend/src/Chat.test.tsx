@@ -17,6 +17,7 @@ function makeUser(overrides: Partial<User>): User {
   return {
     id: 1,
     name: 'Sora',
+    name_ja: '',
     is_admin: false,
     level: 'A1',
     voice: 'Misa',
@@ -26,6 +27,7 @@ function makeUser(overrides: Partial<User>): User {
     explanation_language: 'en',
     show_hiragana: false,
     show_english: false,
+    auto_stop_seconds: 7,
     created_at: new Date().toISOString(),
     ...overrides,
   };
@@ -96,6 +98,14 @@ function fakeFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Respon
   }
   if (url === '/api/sessions/active' && method === 'GET') {
     return Promise.resolve(jsonResponse(activeResponse));
+  }
+  if (url === '/api/sessions/lessons' && method === 'GET') {
+    // Derive the pickable lessons from the current next_lesson so existing
+    // scenarios (next_lesson set ⇒ a lesson is available) keep working.
+    const options = activeResponse.next_lesson
+      ? [{ ...activeResponse.next_lesson, practiced_count: 0, last_practiced_at: null }]
+      : [];
+    return Promise.resolve(jsonResponse(options));
   }
   if (url === '/api/sessions/start' && method === 'POST') {
     startedSessions++;
@@ -197,7 +207,11 @@ describe('Practice page (session-aware)', () => {
     activeResponse = { active: null, next_lesson: makeLesson() };
     render(<App />);
 
-    expect(await screen.findByText(/next up: saying hi/i)).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { name: /choose a lesson/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Saying hi')).toBeInTheDocument();
+    expect(screen.getByText(/recommended/i)).toBeInTheDocument();
     expect(screen.getByText(/level a1/i)).toBeInTheDocument();
     expect(screen.getByText(/greet someone/i)).toBeInTheDocument();
 
@@ -254,7 +268,10 @@ describe('Practice page (session-aware)', () => {
     await screen.findByText('こんにちは!');
     fireEvent.click(screen.getByRole('button', { name: /end session/i }));
 
-    expect(await screen.findByText(/next up: saying hi/i)).toBeInTheDocument();
+    expect(
+      await screen.findByRole('heading', { name: /choose a lesson/i }),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Saying hi')).toBeInTheDocument();
     expect(endedSessions).toBe(1);
   });
 
@@ -269,7 +286,7 @@ describe('Practice page (session-aware)', () => {
   it('defaults the mode toggle to freeform and sends it on Start', async () => {
     activeResponse = { active: null, next_lesson: makeLesson() };
     render(<App />);
-    await screen.findByText(/next up/i);
+    await screen.findByRole('heading', { name: /choose a lesson/i });
 
     expect(screen.getByLabelText(/free-form chat/i)).toBeChecked();
     expect(screen.getByLabelText(/3-phase lesson/i)).not.toBeChecked();
@@ -282,7 +299,7 @@ describe('Practice page (session-aware)', () => {
   it('sends three_phase mode when the user picks the 3-phase option', async () => {
     activeResponse = { active: null, next_lesson: makeLesson() };
     render(<App />);
-    await screen.findByText(/next up/i);
+    await screen.findByRole('heading', { name: /choose a lesson/i });
 
     fireEvent.click(screen.getByLabelText(/3-phase lesson/i));
     fireEvent.click(screen.getByRole('button', { name: /start session/i }));

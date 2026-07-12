@@ -17,7 +17,7 @@ from app.llm.base import ChatResponse, LLMProvider, Message
 from app.llm.claude import ProviderUnavailableError
 from app.session.uploads import detect_image_mime
 
-DEFAULT_MODEL_ID = "anthropic.claude-sonnet-4-20250514-v1:0"
+DEFAULT_MODEL_ID = "anthropic.claude-sonnet-5"
 
 
 class BedrockProvider(LLMProvider):

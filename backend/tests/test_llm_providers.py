@@ -98,7 +98,7 @@ class TestBedrockProvider:
 
         assert result.text == "元気です!"
         call_kwargs = client.invoke_model.call_args.kwargs
-        assert call_kwargs["modelId"] == "anthropic.claude-sonnet-4-20250514-v1:0"
+        assert call_kwargs["modelId"] == "anthropic.claude-sonnet-5"
         body = json.loads(call_kwargs["body"])
         assert body["system"] == "You are Misa"
         assert body["messages"] == [{"role": "user", "content": "元気?"}]

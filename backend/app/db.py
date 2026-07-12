@@ -53,6 +53,9 @@ users_table = Table(
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("name", String, nullable=False, unique=True),
+    # Optional Japanese rendering of the name (katakana/hiragana). Used to bias
+    # speech-to-text so a name like "Nam" (ナム) isn't heard as 眠い.
+    Column("name_ja", String, nullable=False, default=""),
     Column("is_admin", Integer, nullable=False, default=0),
     Column("level", String, nullable=False, default="A1"),
     Column("voice", String, nullable=False, default="Misa"),
@@ -65,6 +68,10 @@ users_table = Table(
     # Optional reading aids displayed under each tutor turn.
     Column("show_hiragana", Integer, nullable=False, default=0),
     Column("show_english", Integer, nullable=False, default=0),
+    # Seconds before "Auto-stop" mode ends a recording on its own (the mic
+    # can always be stopped manually). Only used when the learner enables the
+    # Auto-stop checkbox in the Practice window.
+    Column("auto_stop_seconds", Integer, nullable=False, default=7),
     Column("created_at", DateTime, nullable=False, default=_utcnow),
 )
 
@@ -372,6 +379,8 @@ def _apply_additive_migrations(engine: Engine) -> None:
         # (table, column, sql definition fragment)
         ("users", "show_hiragana", "INTEGER NOT NULL DEFAULT 0"),
         ("users", "show_english", "INTEGER NOT NULL DEFAULT 0"),
+        ("users", "auto_stop_seconds", "INTEGER NOT NULL DEFAULT 7"),
+        ("users", "name_ja", "TEXT NOT NULL DEFAULT ''"),
         ("session_turns", "hiragana_text", "TEXT"),
         ("session_turns", "english_text", "TEXT"),
         ("sessions", "seed_image_path", "TEXT"),

@@ -121,13 +121,31 @@ class GCloudSpeechProvider(SpeechProvider):
     # ------------------------------------------------------------------ #
     # STT
     # ------------------------------------------------------------------ #
-    def transcribe(self, audio: bytes, *, language: str = "ja-JP") -> str:
+    def transcribe(
+        self,
+        audio: bytes,
+        *,
+        language: str = "ja-JP",
+        phrase_hints: list[str] | None = None,
+    ) -> str:
         from google.cloud import speech_v1
+
+        # Speech adaptation: bias recognition toward expected words (the
+        # learner's name, the lesson's target vocabulary). Without this,
+        # near-homophones win — e.g. a name like ナム gets heard as 眠い.
+        speech_contexts = []
+        if phrase_hints:
+            deduped = list(dict.fromkeys(h for h in phrase_hints if h and h.strip()))
+            if deduped:
+                speech_contexts.append(
+                    speech_v1.SpeechContext(phrases=deduped, boost=15.0)
+                )
 
         # Let Google auto-detect the encoding by leaving `encoding` unset.
         config = speech_v1.RecognitionConfig(
             language_code=language,
             enable_automatic_punctuation=True,
+            speech_contexts=speech_contexts,
         )
         recognition_audio = speech_v1.RecognitionAudio(content=audio)
         response = self._stt.recognize(config=config, audio=recognition_audio)
