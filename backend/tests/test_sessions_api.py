@@ -13,7 +13,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.chat import get_provider_for_user_dep
-from app.api.sessions import _ensure_reading_aids
+from app.api.sessions import _FALLBACK_REPLY, _ensure_reading_aids, _tutor_reply
 from app.api.voice import get_speech_provider_dep
 from app.config import Settings
 from app.db import reset_engine_for_tests
@@ -612,3 +612,47 @@ def test_ensure_reading_aids_is_best_effort_on_error() -> None:
 
     # A failed aid call must not blow up the turn — just returns what we had.
     assert result == parsed
+
+
+# --------------------------------------------------------------------------- #
+# Robust reply generation (_tutor_reply)
+# --------------------------------------------------------------------------- #
+
+
+def test_tutor_reply_returns_first_nonempty() -> None:
+    llm = FakeLLM()
+    llm.next_replies = ["こんにちは"]
+    out = _tutor_reply(llm, [Message(role="user", content="やあ")], "sys")
+    assert out == "こんにちは"
+    assert len(llm.calls) == 1
+
+
+def test_tutor_reply_retries_once_on_empty() -> None:
+    llm = FakeLLM()
+    llm.next_replies = ["", "リトライ"]  # first empty, second good
+    out = _tutor_reply(llm, [Message(role="user", content="やあ")], "sys")
+    assert out == "リトライ"
+    assert len(llm.calls) == 2
+
+
+def test_tutor_reply_falls_back_when_both_empty() -> None:
+    llm = FakeLLM()
+    llm.next_replies = ["", ""]
+    out = _tutor_reply(llm, [Message(role="user", content="やあ")], "sys")
+    assert out == _FALLBACK_REPLY  # a real sentence, never "…"
+    assert out != "…"
+    assert len(llm.calls) == 2
+
+
+def test_tutor_reply_drops_trailing_assistant_prefill() -> None:
+    # Sonnet 5+ 400s if the request ends with an assistant turn.
+    llm = FakeLLM()
+    llm.next_replies = ["ok"]
+    history = [
+        Message(role="user", content="u1"),
+        Message(role="assistant", content="a1"),
+    ]
+    _tutor_reply(llm, history, "sys")
+    sent_msgs, _ = llm.calls[0]
+    assert sent_msgs[-1].role == "user"
+    assert len(sent_msgs) == 1

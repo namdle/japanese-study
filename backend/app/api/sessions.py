@@ -359,6 +359,35 @@ def _build_profile_snapshot(engine: Engine, user_id: int) -> str | None:
     return "\n".join(lines) if lines else None
 
 
+# Shown when the tutor returns nothing usable — a real sentence, never "…",
+# so an empty API response can't leave the learner staring at a dead turn.
+_FALLBACK_REPLY = "すみません、もう一度お願いします。"
+
+
+def _tutor_reply(llm: object, history: list[Message], system: str) -> str:
+    """Generate a tutor reply, robust to two real failure modes.
+
+    1. Claude Sonnet 5+ rejects a request whose messages end with an assistant
+       turn ("assistant message prefill" — a 400). Drop any trailing assistant
+       turns so an anomalous/poisoned history can't hard-fail the turn.
+    2. The API occasionally returns an empty message. Retry once, then fall
+       back to a gentle prompt rather than saving an empty "…" turn that looks
+       stuck (and would otherwise poison the conversation).
+    """
+    msgs = list(history)
+    while msgs and msgs[-1].role == "assistant":
+        msgs.pop()
+
+    text = ""
+    for _ in range(2):
+        resp = llm.chat(msgs, system=system)  # type: ignore[attr-defined]
+        text = (resp.text or "").strip()
+        if text:
+            return text
+    logger.warning("Tutor returned an empty reply twice; using fallback")
+    return _FALLBACK_REPLY
+
+
 def _ensure_reading_aids(
     llm: object, user: Mapping[str, object], parsed: ParsedReply
 ) -> ParsedReply:
@@ -883,14 +912,13 @@ def text_turn(
     history = _build_messages_for_session(engine, session_id)
     system_prompt = _build_system_prompt(user, session_row, engine)
     try:
-        chat_response = llm.chat(history, system=system_prompt)  # type: ignore[attr-defined]
+        reply_text = _tutor_reply(llm, history, system_prompt)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"LLM provider error: {exc}",
         ) from exc
 
-    reply_text = (chat_response.text or "").strip() or "…"
     parsed_reply = _ensure_reading_aids(llm, user, parse_tutor_reply(reply_text))
     _append_turn(
         engine,
@@ -944,14 +972,13 @@ def voice_turn(
     history = _build_messages_for_session(engine, session_id)
     system_prompt = _build_system_prompt(user, session_row, engine)
     try:
-        chat_response = llm.chat(history, system=system_prompt)  # type: ignore[attr-defined]
+        reply_text = _tutor_reply(llm, history, system_prompt)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"LLM provider error: {exc}",
         ) from exc
 
-    reply_text = (chat_response.text or "").strip() or "…"
     parsed_reply = _ensure_reading_aids(llm, user, parse_tutor_reply(reply_text))
     ja_for_tts = parsed_reply.text or reply_text
 
