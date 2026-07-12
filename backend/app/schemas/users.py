@@ -107,3 +107,10 @@ class UserUpdate(BaseModel):
 
 class OkResponse(BaseModel):
     ok: bool = Field(default=True)
+
+
+class ProfileResetOut(BaseModel):
+    """Result of clearing a learner's accumulated learning progress."""
+
+    ok: bool = Field(default=True)
+    cleared: dict[str, int]

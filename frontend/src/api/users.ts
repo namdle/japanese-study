@@ -69,3 +69,15 @@ export function deleteUser(id: number): Promise<{ ok: true }> {
     withProfile: false,
   });
 }
+
+export interface ProfileReset {
+  ok: boolean;
+  cleared: Record<string, number>;
+}
+
+export function resetProgress(id: number): Promise<ProfileReset> {
+  return apiRequest<ProfileReset>(`/api/users/${id}/reset-progress`, {
+    method: 'POST',
+    withProfile: false,
+  });
+}

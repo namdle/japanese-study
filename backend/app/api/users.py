@@ -10,9 +10,23 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import delete, insert, select, update
 from sqlalchemy.exc import IntegrityError
 
-from app.db import users_table
+from app.db import (
+    grammar_points_table,
+    mistakes_table,
+    session_turns_table,
+    sessions_table,
+    topic_interests_table,
+    users_table,
+    vocab_items_table,
+)
 from app.deps import EngineDep
-from app.schemas.users import OkResponse, UserCreate, UserOut, UserUpdate
+from app.schemas.users import (
+    OkResponse,
+    ProfileResetOut,
+    UserCreate,
+    UserOut,
+    UserUpdate,
+)
 
 router = APIRouter(prefix="/api/users", tags=["users"])
 
@@ -107,3 +121,55 @@ def delete_user(user_id: int, engine: EngineDep) -> OkResponse:
     if result.rowcount == 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
     return OkResponse()
+
+
+@router.post("/{user_id}/reset-progress", response_model=ProfileResetOut)
+def reset_progress(user_id: int, engine: EngineDep) -> ProfileResetOut:
+    """Clear a learner's accumulated progress so the profile looks fresh.
+
+    Wipes practice history (sessions + turns) and the adaptive learning profile
+    (vocab, grammar mastery, mistakes, topic interests). Keeps the profile
+    itself and all its preferences (name, voice, level, reading aids, etc.).
+    """
+    with engine.begin() as conn:
+        exists = conn.execute(
+            select(users_table.c.id).where(users_table.c.id == user_id)
+        ).one_or_none()
+        if exists is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
+            )
+
+        # Turns cascade with sessions, but delete explicitly so the count is
+        # accurate and it works regardless of the SQLite FK-pragma state.
+        session_ids = select(sessions_table.c.id).where(
+            sessions_table.c.user_id == user_id
+        )
+        turns = conn.execute(
+            delete(session_turns_table).where(
+                session_turns_table.c.session_id.in_(session_ids)
+            )
+        ).rowcount
+        cleared = {
+            "turns": turns,
+            "sessions": conn.execute(
+                delete(sessions_table).where(sessions_table.c.user_id == user_id)
+            ).rowcount,
+            "vocab": conn.execute(
+                delete(vocab_items_table).where(vocab_items_table.c.user_id == user_id)
+            ).rowcount,
+            "grammar": conn.execute(
+                delete(grammar_points_table).where(
+                    grammar_points_table.c.user_id == user_id
+                )
+            ).rowcount,
+            "mistakes": conn.execute(
+                delete(mistakes_table).where(mistakes_table.c.user_id == user_id)
+            ).rowcount,
+            "interests": conn.execute(
+                delete(topic_interests_table).where(
+                    topic_interests_table.c.user_id == user_id
+                )
+            ).rowcount,
+        }
+    return ProfileResetOut(cleared=cleared)

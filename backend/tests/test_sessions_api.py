@@ -16,7 +16,7 @@ from app.api.chat import get_provider_for_user_dep
 from app.api.sessions import _FALLBACK_REPLY, _ensure_reading_aids, _tutor_reply
 from app.api.voice import get_speech_provider_dep
 from app.config import Settings
-from app.db import reset_engine_for_tests
+from app.db import get_engine, reset_engine_for_tests, topic_interests_table
 from app.deps import CurrentUser
 from app.llm.base import ChatResponse, Message, ParsedReply
 from app.main import create_app
@@ -661,3 +661,67 @@ def test_tutor_reply_drops_trailing_assistant_prefill() -> None:
     sent_msgs, _ = llm.calls[0]
     assert sent_msgs[-1].role == "user"
     assert len(sent_msgs) == 1
+
+
+# --------------------------------------------------------------------------- #
+# Reset learning progress
+# --------------------------------------------------------------------------- #
+
+
+def test_reset_progress_clears_history_but_keeps_profile(session_setup) -> None:
+    client, _, _, admin_id, learner_id = session_setup
+    _approve_first_lesson(client, admin_id)
+    learner_headers = {"X-User-Id": str(learner_id)}
+
+    # Build some progress: a finished session + turns, and a topic interest.
+    started = client.post(
+        "/api/sessions/start", json={}, headers=learner_headers
+    ).json()
+    client.post(
+        f"/api/sessions/{started['session']['id']}/turn",
+        json={"content": "やあ"},
+        headers=learner_headers,
+    )
+    client.post(f"/api/sessions/{started['session']['id']}/end", headers=learner_headers)
+    from sqlalchemy import insert, select
+
+    with get_engine().begin() as conn:
+        conn.execute(
+            insert(topic_interests_table).values(
+                user_id=learner_id, keyword="soccer", weight=3
+            )
+        )
+
+    # Sanity: the lesson now shows as practiced.
+    opts = client.get("/api/sessions/lessons", headers=learner_headers).json()
+    assert opts[0]["practiced_count"] >= 1
+
+    # Reset.
+    resp = client.post(f"/api/users/{learner_id}/reset-progress")
+    assert resp.status_code == 200, resp.json()
+    cleared = resp.json()["cleared"]
+    assert cleared["sessions"] >= 1
+    assert cleared["turns"] >= 1
+    assert cleared["interests"] == 1
+
+    # Profile still exists with its settings intact.
+    user = client.get(f"/api/users/{learner_id}").json()
+    assert user["name"] == "Sora"
+
+    # Looks fresh again: no active session, lesson back to "new", interests gone.
+    active = client.get("/api/sessions/active", headers=learner_headers).json()
+    assert active["active"] is None
+    opts = client.get("/api/sessions/lessons", headers=learner_headers).json()
+    assert opts[0]["practiced_count"] == 0
+    with get_engine().connect() as conn:
+        remaining = conn.execute(
+            select(topic_interests_table).where(
+                topic_interests_table.c.user_id == learner_id
+            )
+        ).all()
+    assert remaining == []
+
+
+def test_reset_progress_404_for_unknown_user(session_setup) -> None:
+    client, _, _, _, _ = session_setup
+    assert client.post("/api/users/99999/reset-progress").status_code == 404

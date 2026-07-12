@@ -340,6 +340,15 @@ input[type='text']:focus {
   margin: 0 0 1.5rem;
 }
 
+.notice-banner {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  padding: 0.75rem 1rem;
+  margin: 0 0 1.5rem;
+}
+
 /* Chat / practice page */
 .chat-page {
   max-width: 760px;

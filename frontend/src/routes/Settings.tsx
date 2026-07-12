@@ -4,6 +4,7 @@ import {
   createUser,
   deleteUser,
   listUsers,
+  resetProgress,
   updateUser,
   type User,
   type UserUpdate,
@@ -17,6 +18,7 @@ interface SettingsProps {
 export function Settings({ currentUser, onChanged }: SettingsProps): JSX.Element {
   const [users, setUsers] = useState<User[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<{ id: number; name: string } | null>(null);
@@ -101,6 +103,33 @@ export function Settings({ currentUser, onChanged }: SettingsProps): JSX.Element
     }
   };
 
+  const onResetProgress = async (user: User) => {
+    if (
+      !window.confirm(
+        `Clear all learning progress for "${user.name}"? This wipes practice ` +
+          `history and the learned vocabulary/grammar/interests so the profile ` +
+          `starts fresh. Settings (name, voice, level) are kept. This cannot be undone.`,
+      )
+    )
+      return;
+    setError(null);
+    setNotice(null);
+    try {
+      const res = await resetProgress(user.id);
+      const total = Object.values(res.cleared).reduce((a, b) => a + b, 0);
+      setNotice(
+        total === 0
+          ? `"${user.name}" already had no learning progress to clear.`
+          : `Cleared ${user.name}'s progress: ${res.cleared.sessions} sessions, ` +
+              `${res.cleared.vocab} vocab, ${res.cleared.grammar} grammar, ` +
+              `${res.cleared.mistakes} mistakes, ${res.cleared.interests} interests.`,
+      );
+      onChanged();
+    } catch (err) {
+      handleError(err);
+    }
+  };
+
   return (
     <main className="page">
       <header className="page__header">
@@ -111,6 +140,12 @@ export function Settings({ currentUser, onChanged }: SettingsProps): JSX.Element
       {error && (
         <p className="error-banner" role="alert">
           {error}
+        </p>
+      )}
+
+      {notice && (
+        <p className="notice-banner" role="status">
+          {notice}
         </p>
       )}
 
@@ -150,6 +185,13 @@ export function Settings({ currentUser, onChanged }: SettingsProps): JSX.Element
                       onClick={() => setEditing({ id: u.id, name: u.name })}
                     >
                       Rename
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onResetProgress(u)}
+                      aria-label={`Reset learning progress for ${u.name}`}
+                    >
+                      Reset progress
                     </button>
                     <button
                       type="button"
