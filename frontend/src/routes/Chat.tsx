@@ -514,7 +514,7 @@ export function Chat({ user }: ChatProps): JSX.Element {
           {mic.state !== 'unsupported' && (
             <label
               className="auto-stop-toggle"
-              title={`Tap Speak to start; recording ends automatically after ${user.auto_stop_seconds}s. You can still stop early.`}
+              title={`Tap Speak to start; recording ends automatically after ${user.auto_stop_seconds}s of silence once you've spoken. You can still stop early.`}
             >
               <input
                 type="checkbox"

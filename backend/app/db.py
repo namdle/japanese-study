@@ -68,10 +68,10 @@ users_table = Table(
     # Optional reading aids displayed under each tutor turn.
     Column("show_hiragana", Integer, nullable=False, default=0),
     Column("show_english", Integer, nullable=False, default=0),
-    # Seconds before "Auto-stop" mode ends a recording on its own (the mic
-    # can always be stopped manually). Only used when the learner enables the
-    # Auto-stop checkbox in the Practice window.
-    Column("auto_stop_seconds", Integer, nullable=False, default=7),
+    # Seconds of silence (after the learner has spoken) before "Auto-stop" mode
+    # ends a recording on its own; the mic can always be stopped manually. Only
+    # used when the learner enables the Auto-stop checkbox in the Practice window.
+    Column("auto_stop_seconds", Integer, nullable=False, default=2),
     Column("created_at", DateTime, nullable=False, default=_utcnow),
 )
 
@@ -379,7 +379,7 @@ def _apply_additive_migrations(engine: Engine) -> None:
         # (table, column, sql definition fragment)
         ("users", "show_hiragana", "INTEGER NOT NULL DEFAULT 0"),
         ("users", "show_english", "INTEGER NOT NULL DEFAULT 0"),
-        ("users", "auto_stop_seconds", "INTEGER NOT NULL DEFAULT 7"),
+        ("users", "auto_stop_seconds", "INTEGER NOT NULL DEFAULT 2"),
         ("users", "name_ja", "TEXT NOT NULL DEFAULT ''"),
         ("session_turns", "hiragana_text", "TEXT"),
         ("session_turns", "english_text", "TEXT"),

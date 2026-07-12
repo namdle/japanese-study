@@ -4,8 +4,10 @@ export type MicState = 'idle' | 'requesting' | 'recording' | 'unsupported' | 'de
 
 interface UseMicOptions {
   onStop?: (audio: Blob) => void;
-  // When > 0, recording auto-stops after this many milliseconds. The user can
-  // still stop manually. 0 / undefined disables auto-stop.
+  // "Auto-stop" silence window: when > 0, recording ends automatically after
+  // this many milliseconds of *silence* once the user has started speaking
+  // (voice-activity detection). The user can always stop manually. 0/undefined
+  // disables auto-stop.
   autoStopMs?: number;
 }
 
@@ -16,6 +18,17 @@ interface UseMic {
   error: string | null;
 }
 
+// --- Voice-activity-detection tuning -------------------------------------- //
+const VAD_POLL_MS = 100; // how often we sample the mic level
+const VAD_CALIBRATION_MS = 400; // measure ambient noise before judging speech
+const VAD_SPEECH_FACTOR = 3; // speech = this many× above the noise floor
+const VAD_SPEECH_ABS_MIN = 0.01; // absolute RMS floor so dead silence never counts
+const VAD_NOISE_FLOOR_MIN = 0.003;
+const VAD_NOISE_FLOOR_MAX = 0.02; // clamp so speaking during calibration can't blind us
+// Hard safety cap: a single turn never records longer than this (also the sole
+// stop mechanism if the user never speaks, or if Web Audio is unavailable).
+const MAX_RECORDING_MS = 60_000;
+
 function pickMimeType(): string | undefined {
   // Prefer compact opus where supported.
   const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg'];
@@ -23,6 +36,14 @@ function pickMimeType(): string | undefined {
     if (typeof MediaRecorder !== 'undefined' && MediaRecorder.isTypeSupported(c)) return c;
   }
   return undefined;
+}
+
+function getAudioContextCtor(): typeof AudioContext | undefined {
+  if (typeof window === 'undefined') return undefined;
+  return (
+    window.AudioContext ??
+    (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+  );
 }
 
 export function useMic(options: UseMicOptions = {}): UseMic {
@@ -37,6 +58,8 @@ export function useMic(options: UseMicOptions = {}): UseMic {
   const onStopRef = useRef(options.onStop);
   const autoStopMsRef = useRef(options.autoStopMs);
   const autoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const vadIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
 
   // Keep the latest callback/config without re-creating start/stop on every render.
   useEffect(() => {
@@ -46,10 +69,23 @@ export function useMic(options: UseMicOptions = {}): UseMic {
     autoStopMsRef.current = options.autoStopMs;
   }, [options.autoStopMs]);
 
+  // Tear down every auto-stop mechanism (silence timer, VAD poller, audio graph).
   const clearAutoStop = useCallback(() => {
     if (autoStopTimerRef.current !== null) {
       clearTimeout(autoStopTimerRef.current);
       autoStopTimerRef.current = null;
+    }
+    if (vadIntervalRef.current !== null) {
+      clearInterval(vadIntervalRef.current);
+      vadIntervalRef.current = null;
+    }
+    if (audioCtxRef.current !== null) {
+      try {
+        void audioCtxRef.current.close();
+      } catch {
+        // ignore
+      }
+      audioCtxRef.current = null;
     }
   }, []);
 
@@ -57,6 +93,76 @@ export function useMic(options: UseMicOptions = {}): UseMic {
     streamRef.current?.getTracks().forEach((t) => t.stop());
     streamRef.current = null;
   }, []);
+
+  // Arm auto-stop: prefer silence detection (Web Audio), else a max-length cap.
+  const armAutoStop = useCallback((stream: MediaStream, silenceMs: number) => {
+    const stopNow = () => {
+      const r = recorderRef.current;
+      if (r && r.state !== 'inactive') r.stop();
+    };
+
+    const AudioCtx = getAudioContextCtor();
+    if (!AudioCtx) {
+      // No Web Audio — can't detect silence. Cap length so the mic can't hang.
+      autoStopTimerRef.current = setTimeout(stopNow, MAX_RECORDING_MS);
+      return;
+    }
+
+    try {
+      const audioCtx = new AudioCtx();
+      audioCtxRef.current = audioCtx;
+      void audioCtx.resume(); // required on some browsers; harmless on Chrome
+
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 2048;
+      source.connect(analyser);
+      const buf = new Float32Array(analyser.fftSize);
+
+      const startedAt = Date.now();
+      let lastSpeech = startedAt;
+      let hasSpoken = false;
+      let noiseFloor = VAD_NOISE_FLOOR_MIN;
+      let noiseMin = Infinity;
+      let calibrated = false;
+
+      vadIntervalRef.current = setInterval(() => {
+        analyser.getFloatTimeDomainData(buf);
+        let sumSq = 0;
+        for (let i = 0; i < buf.length; i++) sumSq += buf[i] * buf[i];
+        const rms = Math.sqrt(sumSq / buf.length);
+        const now = Date.now();
+        const elapsed = now - startedAt;
+
+        // Calibrate the ambient noise floor from the quietest early frame
+        // (min is robust to the user speaking during calibration).
+        if (elapsed < VAD_CALIBRATION_MS) {
+          noiseMin = Math.min(noiseMin, rms);
+          return;
+        }
+        if (!calibrated) {
+          const measured = noiseMin === Infinity ? VAD_NOISE_FLOOR_MIN : noiseMin;
+          noiseFloor = Math.min(Math.max(measured, VAD_NOISE_FLOOR_MIN), VAD_NOISE_FLOOR_MAX);
+          calibrated = true;
+        }
+
+        const threshold = Math.max(noiseFloor * VAD_SPEECH_FACTOR, VAD_SPEECH_ABS_MIN);
+        if (rms > threshold) {
+          lastSpeech = now;
+          hasSpoken = true;
+        }
+
+        // Stop after a silence gap following speech, or at the hard cap.
+        if ((hasSpoken && now - lastSpeech >= silenceMs) || elapsed >= MAX_RECORDING_MS) {
+          stopNow();
+        }
+      }, VAD_POLL_MS);
+    } catch {
+      // Web Audio setup failed — degrade to a max-length cap.
+      clearAutoStop();
+      autoStopTimerRef.current = setTimeout(stopNow, MAX_RECORDING_MS);
+    }
+  }, [clearAutoStop]);
 
   const start = useCallback(async () => {
     if (state === 'unsupported') return;
@@ -91,14 +197,10 @@ export function useMic(options: UseMicOptions = {}): UseMic {
       recorder.start();
       setState('recording');
 
-      // Arm the auto-stop timer if enabled. The manual stop path clears it too.
-      const autoStopMs = autoStopMsRef.current;
-      if (autoStopMs && autoStopMs > 0) {
-        autoStopTimerRef.current = setTimeout(() => {
-          autoStopTimerRef.current = null;
-          const r = recorderRef.current;
-          if (r && r.state !== 'inactive') r.stop();
-        }, autoStopMs);
+      // Arm auto-stop (silence detection) if enabled. Manual stop clears it too.
+      const silenceMs = autoStopMsRef.current;
+      if (silenceMs && silenceMs > 0) {
+        armAutoStop(stream, silenceMs);
       }
     } catch (err) {
       const e = err as DOMException;
@@ -107,7 +209,7 @@ export function useMic(options: UseMicOptions = {}): UseMic {
       setState(denied ? 'denied' : 'idle');
       cleanupStream();
     }
-  }, [state, cleanupStream, clearAutoStop]);
+  }, [state, cleanupStream, clearAutoStop, armAutoStop]);
 
   const stop = useCallback(() => {
     clearAutoStop();

@@ -306,7 +306,7 @@ export function Settings({ currentUser, onChanged }: SettingsProps): JSX.Element
             <option value="C1">C1 — Advanced</option>
           </select>
 
-          <label htmlFor="pref-auto-stop">Auto-stop recording after</label>
+          <label htmlFor="pref-auto-stop">Auto-stop after silence of</label>
           <select
             id="pref-auto-stop"
             value={currentUser.auto_stop_seconds}
@@ -314,12 +314,12 @@ export function Settings({ currentUser, onChanged }: SettingsProps): JSX.Element
               handlePrefChange({ auto_stop_seconds: Number(e.target.value) })
             }
           >
+            <option value={1}>1 second</option>
+            <option value={2}>2 seconds</option>
             <option value={3}>3 seconds</option>
             <option value={5}>5 seconds</option>
             <option value={7}>7 seconds</option>
             <option value={10}>10 seconds</option>
-            <option value={15}>15 seconds</option>
-            <option value={20}>20 seconds</option>
           </select>
         </div>
       </section>

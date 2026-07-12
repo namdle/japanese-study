@@ -28,7 +28,7 @@ def test_create_user_returns_full_profile(client: TestClient) -> None:
     assert body["explanation_language"] == "en"
     assert body["show_hiragana"] is False
     assert body["show_english"] is False
-    assert body["auto_stop_seconds"] == 7
+    assert body["auto_stop_seconds"] == 2
     assert body["name_ja"] == ""
     assert "created_at" in body
 
@@ -96,6 +96,11 @@ def test_patch_user_auto_stop_seconds_out_of_range(client: TestClient) -> None:
     assert (
         client.patch(f"/api/users/{created['id']}", json={"auto_stop_seconds": 999}).status_code
         == 422
+    )
+    # 1 second is now valid (short silence windows are expected).
+    assert (
+        client.patch(f"/api/users/{created['id']}", json={"auto_stop_seconds": 1}).status_code
+        == 200
     )
 
 

@@ -99,8 +99,9 @@ class UserUpdate(BaseModel):
     def _validate_auto_stop(cls, value: int | None) -> int | None:
         if value is None:
             return value
-        if not 3 <= value <= 30:
-            raise ValueError("auto_stop_seconds must be between 3 and 30")
+        # Silence window before auto-stop kicks in; short values are expected.
+        if not 1 <= value <= 30:
+            raise ValueError("auto_stop_seconds must be between 1 and 30")
         return value
 
 
