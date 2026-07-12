@@ -49,7 +49,7 @@ from app.session.orchestrator import (
 )
 from app.session.uploads import detect_image_mime, save_upload
 from app.speech.base import SpeechProvider, TutorVoice
-from app.speech.hints import build_phrase_hints
+from app.speech.hints import extract_vocab_hints
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -227,8 +227,13 @@ def _load_session(engine: Engine, session_id: int) -> Mapping[str, object] | Non
 
 def _session_phrase_hints(
     engine: Engine, user: Mapping[str, object], session_row: Mapping[str, object]
-) -> list[str]:
-    """Speech-adaptation hints for a voice turn: learner name + lesson vocab."""
+) -> tuple[list[str], list[str]]:
+    """Speech-adaptation hints for a voice turn.
+
+    Returns (strong, vocab): the learner's name gets its own maximum-boost
+    context so it wins ambiguous cases; the lesson vocabulary is a moderate
+    boost.
+    """
     plan_markdown: str | None = None
     plan_id = session_row.get("lesson_plan_id")
     if plan_id is not None:
@@ -240,9 +245,10 @@ def _session_phrase_hints(
             ).one_or_none()
         if row is not None:
             plan_markdown = row[0]
-    return build_phrase_hints(
-        name_ja=str(user.get("name_ja") or ""), plan_markdown=plan_markdown
-    )
+    name = str(user.get("name_ja") or "").strip()
+    strong = [name] if name else []
+    vocab = extract_vocab_hints(plan_markdown)
+    return strong, vocab
 
 
 def _ensure_owned_active(
@@ -951,10 +957,12 @@ def voice_turn(
     if not audio_bytes:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="audio file is empty")
 
+    strong_hints, vocab_hints = _session_phrase_hints(engine, user, session_row)
     try:
         transcript = speech.transcribe(
             audio_bytes,
-            phrase_hints=_session_phrase_hints(engine, user, session_row),
+            phrase_hints=vocab_hints,
+            strong_hints=strong_hints,
         )
     except Exception as exc:
         raise HTTPException(

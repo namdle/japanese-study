@@ -49,6 +49,7 @@ class FakeSpeech(SpeechProvider):
         *,
         language: str = "ja-JP",
         phrase_hints: list[str] | None = None,
+        strong_hints: list[str] | None = None,
     ) -> str:
         self.transcribe_calls.append(audio)
         return self.transcript

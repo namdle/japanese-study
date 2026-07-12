@@ -38,7 +38,6 @@ from app.speech.base import (
     SpeechProviderUnavailableError,
     TutorVoice,
 )
-from app.speech.hints import build_phrase_hints
 from app.speech.router import (
     UnknownSpeechProviderError,
     get_speech_provider_for_user,
@@ -117,11 +116,12 @@ def voice_turn(
             detail="audio file is empty",
         )
 
-    # 1) STT — bias toward the learner's name (no lesson context here).
+    # 1) STT — strongly bias toward the learner's name (no lesson context here).
+    name_ja = str(user.get("name_ja") or "").strip()
     try:
         transcript = speech.transcribe(
             audio_bytes,
-            phrase_hints=build_phrase_hints(name_ja=str(user.get("name_ja") or "")),
+            strong_hints=[name_ja] if name_ja else None,
         )
     except SpeechProviderUnavailableError as exc:
         raise HTTPException(

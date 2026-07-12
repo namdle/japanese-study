@@ -45,14 +45,30 @@ def test_transcribe_passes_phrase_hints_as_boosted_context() -> None:
     stt.recognize.return_value = SimpleNamespace(results=[])
     provider = GCloudSpeechProvider(stt_client=stt, tts_client=MagicMock())
 
-    provider.transcribe(b"x", phrase_hints=["ナム", "はじめまして", "ナム"])
+    provider.transcribe(b"x", phrase_hints=["はじめまして", "はじめまして"])
 
     config = stt.recognize.call_args.kwargs["config"]
     assert len(config.speech_contexts) == 1
     ctx = config.speech_contexts[0]
-    # De-duplicated, order preserved, and boosted.
-    assert list(ctx.phrases) == ["ナム", "はじめまして"]
+    assert list(ctx.phrases) == ["はじめまして"]  # de-duplicated
     assert ctx.boost > 0
+
+
+def test_transcribe_name_gets_its_own_stronger_context() -> None:
+    stt = MagicMock()
+    stt.recognize.return_value = SimpleNamespace(results=[])
+    provider = GCloudSpeechProvider(stt_client=stt, tts_client=MagicMock())
+
+    # The name (strong) must be boosted higher than the vocab so it wins
+    # ambiguous cases, and must not be duplicated in the vocab context.
+    provider.transcribe(b"x", strong_hints=["ナム"], phrase_hints=["はじめまして", "ナム"])
+
+    contexts = stt.recognize.call_args.kwargs["config"].speech_contexts
+    assert len(contexts) == 2
+    strong, vocab = contexts[0], contexts[1]
+    assert list(strong.phrases) == ["ナム"]
+    assert list(vocab.phrases) == ["はじめまして"]  # ナム de-duplicated out of vocab
+    assert strong.boost > vocab.boost
 
 
 def test_transcribe_no_context_without_hints() -> None:

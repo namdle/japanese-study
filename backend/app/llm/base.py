@@ -106,6 +106,16 @@ def build_tutor_system_prompt(
     lines: list[str] = [
         f"You are {voice}, a friendly Japanese tutor ({gender}).",
         f"You are practicing conversation with a learner named {name}.",
+        (
+            f"The learner's name is {name}. NEVER correct the spelling or "
+            f"pronunciation of their own name. Speech-to-text often mishears "
+            f"short foreign names (e.g. '{name}' may come through as ラム, "
+            f"ナムル, or ラムダ). When a name-like word looks garbled, silently "
+            f"understand it as {name} and keep the conversation moving — do "
+            f"not point it out, ask them to repeat their name, or turn it into "
+            f"a correction. (You may still gently correct other language "
+            f"mistakes per the guidance below.)"
+        ),
         f"Speak naturally in Japanese at CEFR level {level}.",
         "Avoid corporate or business contexts; favor topics like family, friends, "
         "school, hobbies, food, and daily life.",

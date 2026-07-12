@@ -45,6 +45,7 @@ class FakeSpeech(SpeechProvider):
     def __init__(self) -> None:
         self.transcript = "こんにちは"
         self.last_phrase_hints: list[str] | None = None
+        self.last_strong_hints: list[str] | None = None
 
     def transcribe(  # noqa: ARG002
         self,
@@ -52,8 +53,10 @@ class FakeSpeech(SpeechProvider):
         *,
         language: str = "ja-JP",
         phrase_hints: list[str] | None = None,
+        strong_hints: list[str] | None = None,
     ) -> str:
         self.last_phrase_hints = phrase_hints
+        self.last_strong_hints = strong_hints
         return self.transcript
 
     def synthesize(self, text: str, *, voice: TutorVoice, language: str = "ja-JP"):  # noqa: ARG002
@@ -245,9 +248,11 @@ def test_voice_turn_passes_name_and_vocab_phrase_hints(session_setup) -> None:
         headers=learner_headers,
     )
 
+    # Name goes in the strong (max-boost) context; lesson vocab in phrase_hints.
+    assert speech.last_strong_hints == ["ソラ"]
     assert speech.last_phrase_hints is not None
-    assert "ソラ" in speech.last_phrase_hints  # learner name
     assert "はじめまして" in speech.last_phrase_hints  # lesson vocab
+    assert "ソラ" not in speech.last_phrase_hints  # not duplicated in vocab
 
 
 def test_end_session_sets_ended_at(session_setup) -> None:

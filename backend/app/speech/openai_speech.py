@@ -47,6 +47,7 @@ class OpenAISpeechProvider(SpeechProvider):
         *,
         language: str = "ja-JP",
         phrase_hints: list[str] | None = None,
+        strong_hints: list[str] | None = None,
     ) -> str:
         # Whisper expects a file-like object with a name hint for format detection.
         audio_file = io.BytesIO(audio)
@@ -54,13 +55,13 @@ class OpenAISpeechProvider(SpeechProvider):
         # language param for Whisper is ISO 639-1 (e.g., "ja").
         lang_code = language.split("-")[0] if "-" in language else language
         # Whisper biases toward words that appear in `prompt`; feed it the
-        # expected vocabulary (learner name, lesson words) so near-homophones
-        # like ナム vs 眠い resolve correctly.
+        # learner name + expected vocabulary so near-homophones (ナム vs 眠い)
+        # resolve correctly. (Whisper has no per-term boost, so both go in.)
         kwargs: dict[str, object] = {}
-        if phrase_hints:
-            deduped = list(dict.fromkeys(h for h in phrase_hints if h and h.strip()))
-            if deduped:
-                kwargs["prompt"] = "、".join(deduped)
+        combined = (strong_hints or []) + (phrase_hints or [])
+        deduped = list(dict.fromkeys(h for h in combined if h and h.strip()))
+        if deduped:
+            kwargs["prompt"] = "、".join(deduped)
         response = self._client.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,

@@ -127,19 +127,26 @@ class GCloudSpeechProvider(SpeechProvider):
         *,
         language: str = "ja-JP",
         phrase_hints: list[str] | None = None,
+        strong_hints: list[str] | None = None,
     ) -> str:
         from google.cloud import speech_v1
 
-        # Speech adaptation: bias recognition toward expected words (the
-        # learner's name, the lesson's target vocabulary). Without this,
-        # near-homophones win — e.g. a name like ナム gets heard as 眠い.
+        # Speech adaptation: bias recognition toward expected words. The learner's
+        # name goes in its own context at the maximum boost so it wins ambiguous
+        # cases (e.g. ナム vs ラム/ナムル); the lesson vocabulary gets a moderate
+        # boost. Without this, near-homophones win — e.g. ナム heard as 眠い.
         speech_contexts = []
-        if phrase_hints:
-            deduped = list(dict.fromkeys(h for h in phrase_hints if h and h.strip()))
-            if deduped:
-                speech_contexts.append(
-                    speech_v1.SpeechContext(phrases=deduped, boost=15.0)
-                )
+        strong = list(dict.fromkeys(h for h in (strong_hints or []) if h and h.strip()))
+        if strong:
+            speech_contexts.append(speech_v1.SpeechContext(phrases=strong, boost=20.0))
+        strong_set = set(strong)
+        vocab = list(
+            dict.fromkeys(
+                h for h in (phrase_hints or []) if h and h.strip() and h not in strong_set
+            )
+        )
+        if vocab:
+            speech_contexts.append(speech_v1.SpeechContext(phrases=vocab, boost=15.0))
 
         # Let Google auto-detect the encoding by leaving `encoding` unset.
         config = speech_v1.RecognitionConfig(
