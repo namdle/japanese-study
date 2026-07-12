@@ -13,11 +13,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.api.chat import get_provider_for_user_dep
+from app.api.sessions import _ensure_reading_aids
 from app.api.voice import get_speech_provider_dep
 from app.config import Settings
 from app.db import reset_engine_for_tests
 from app.deps import CurrentUser
-from app.llm.base import ChatResponse, Message
+from app.llm.base import ChatResponse, Message, ParsedReply
 from app.main import create_app
 from app.speech.base import SpeechProvider, SynthesizedAudio, TutorVoice
 
@@ -545,3 +546,69 @@ def test_reading_aids_parsed_into_turn_fields(session_setup) -> None:
     assert last_assistant["text"] == "そうですね、いいですね!"
     assert last_assistant["hiragana"] == "そうですね、いいですね!"
     assert last_assistant["english"] == "Right, that's nice!"
+
+
+# --------------------------------------------------------------------------- #
+# Reading-aid backfill (_ensure_reading_aids)
+# --------------------------------------------------------------------------- #
+
+
+def test_ensure_reading_aids_backfills_when_missing() -> None:
+    llm = FakeLLM()
+    llm.next_replies = ["[HIRAGANA] こんにちは\n[EN] Hello"]
+    user = {"show_hiragana": 1, "show_english": 1}
+    parsed = ParsedReply(text="今日は。", hiragana=None, english=None)
+
+    result = _ensure_reading_aids(llm, user, parsed)
+
+    assert result.text == "今日は。"
+    assert result.hiragana == "こんにちは"
+    assert result.english == "Hello"
+    assert len(llm.calls) == 1  # one focused backfill call
+
+
+def test_ensure_reading_aids_skips_when_already_present() -> None:
+    llm = FakeLLM()
+    user = {"show_hiragana": 1, "show_english": 1}
+    parsed = ParsedReply(text="x", hiragana="ひ", english="e")
+
+    result = _ensure_reading_aids(llm, user, parsed)
+
+    assert result == parsed
+    assert llm.calls == []  # no extra LLM call when nothing is missing
+
+
+def test_ensure_reading_aids_skips_when_not_requested() -> None:
+    llm = FakeLLM()
+    user = {"show_hiragana": 0, "show_english": 0}
+    parsed = ParsedReply(text="x", hiragana=None, english=None)
+
+    result = _ensure_reading_aids(llm, user, parsed)
+
+    assert result == parsed
+    assert llm.calls == []
+
+
+def test_ensure_reading_aids_only_backfills_the_missing_one() -> None:
+    llm = FakeLLM()
+    llm.next_replies = ["[EN] Hello there"]
+    # Wants both; hiragana already present, English missing.
+    user = {"show_hiragana": 1, "show_english": 1}
+    parsed = ParsedReply(text="今日は。", hiragana="きょうは。", english=None)
+
+    result = _ensure_reading_aids(llm, user, parsed)
+
+    assert result.hiragana == "きょうは。"  # untouched
+    assert result.english == "Hello there"  # backfilled
+
+
+def test_ensure_reading_aids_is_best_effort_on_error() -> None:
+    class BoomLLM(FakeLLM):
+        def chat(self, messages, *, system, images=None, temperature=0.6):  # noqa: ARG002
+            raise RuntimeError("provider down")
+
+    parsed = ParsedReply(text="今日は。", hiragana=None, english=None)
+    result = _ensure_reading_aids(BoomLLM(), {"show_english": 1}, parsed)
+
+    # A failed aid call must not blow up the turn — just returns what we had.
+    assert result == parsed

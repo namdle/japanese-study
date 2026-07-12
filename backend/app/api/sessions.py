@@ -36,15 +36,20 @@ from app.db import (
     topics_table,
 )
 from app.deps import CurrentUser, EngineDep
-from app.llm.base import Message, build_tutor_system_prompt, parse_tutor_reply
+from app.llm.base import (
+    Message,
+    ParsedReply,
+    build_tutor_system_prompt,
+    parse_tutor_reply,
+)
 from app.session.orchestrator import (
     NextLesson,
     get_lesson_for_session,
     pick_next_lesson,
 )
 from app.session.uploads import detect_image_mime, save_upload
-from app.speech.hints import build_phrase_hints
 from app.speech.base import SpeechProvider, TutorVoice
+from app.speech.hints import build_phrase_hints
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -354,6 +359,52 @@ def _build_profile_snapshot(engine: Engine, user_id: int) -> str | None:
     return "\n".join(lines) if lines else None
 
 
+def _ensure_reading_aids(
+    llm: object, user: Mapping[str, object], parsed: ParsedReply
+) -> ParsedReply:
+    """Guarantee the reading aids the learner asked for are present.
+
+    The tutor is prompted to append [HIRAGANA]/[EN] lines inline, but in long
+    conversations it sometimes drops them. When a requested aid is missing,
+    backfill it with one focused, best-effort LLM call for the reply text —
+    keeping the fast inline path when the tutor complied.
+    """
+    want_hira = bool(user.get("show_hiragana"))
+    want_en = bool(user.get("show_english"))
+    need_hira = want_hira and not parsed.hiragana
+    need_en = want_en and not parsed.english
+    if not parsed.text.strip() or not (need_hira or need_en):
+        return parsed
+
+    reqs: list[str] = []
+    if need_hira:
+        reqs.append(
+            "[HIRAGANA] <the text rewritten with every kanji replaced by its "
+            "hiragana reading; keep punctuation and existing kana as-is>"
+        )
+    if need_en:
+        reqs.append("[EN] <a brief, natural English translation of the text>")
+    aid_system = (
+        "You add reading aids to a single Japanese message. Output ONLY the "
+        "marker line(s) below, each on its own line — no original text, no "
+        "commentary.\n" + "\n".join(reqs)
+    )
+    try:
+        aid_resp = llm.chat(  # type: ignore[attr-defined]
+            [Message(role="user", content=parsed.text)], system=aid_system
+        )
+    except Exception:
+        logger.warning("Reading-aid backfill failed", exc_info=True)
+        return parsed
+
+    aid = parse_tutor_reply(aid_resp.text or "")
+    return ParsedReply(
+        text=parsed.text,
+        hiragana=parsed.hiragana or (aid.hiragana if need_hira else None),
+        english=parsed.english or (aid.english if need_en else None),
+    )
+
+
 def _append_turn(
     engine: Engine,
     session_id: int,
@@ -589,7 +640,7 @@ def start_session(
         logger.warning("Opening greeting failed (%s); using fallback", exc)
         opening_text = f"こんにちは、{user['name']}さん!"
 
-    parsed_opener = parse_tutor_reply(opening_text)
+    parsed_opener = _ensure_reading_aids(llm, user, parse_tutor_reply(opening_text))
     opener_ja = parsed_opener.text or opening_text
 
     # Synthesize audio for the opening greeting.
@@ -754,7 +805,7 @@ def start_session_from_image(
             ),
         )
 
-    parsed_opener = parse_tutor_reply(opening_text)
+    parsed_opener = _ensure_reading_aids(llm, user, parse_tutor_reply(opening_text))
     opener_ja = parsed_opener.text or opening_text
 
     # Synthesize audio for the opening greeting.
@@ -840,7 +891,7 @@ def text_turn(
         ) from exc
 
     reply_text = (chat_response.text or "").strip() or "…"
-    parsed_reply = parse_tutor_reply(reply_text)
+    parsed_reply = _ensure_reading_aids(llm, user, parse_tutor_reply(reply_text))
     _append_turn(
         engine,
         session_id,
@@ -901,7 +952,7 @@ def voice_turn(
         ) from exc
 
     reply_text = (chat_response.text or "").strip() or "…"
-    parsed_reply = parse_tutor_reply(reply_text)
+    parsed_reply = _ensure_reading_aids(llm, user, parse_tutor_reply(reply_text))
     ja_for_tts = parsed_reply.text or reply_text
 
     voice_enum = TutorVoice.from_string(str(user["voice"]))

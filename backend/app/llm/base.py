@@ -162,8 +162,10 @@ def build_tutor_system_prompt(
                 "reply>"
             )
         lines.append(
-            "Do NOT include these helper lines inside the Japanese reply "
-            "itself, and do NOT add any other markers or commentary."
+            "Append these on EVERY reply without exception — including short "
+            "replies, corrections, and role-play/quoted lines. Do NOT include "
+            "the helper lines inside the Japanese reply itself, and do NOT add "
+            "any other markers or commentary."
         )
 
     return "\n".join(lines)
