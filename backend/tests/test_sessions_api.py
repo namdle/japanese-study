@@ -30,7 +30,7 @@ class FakeLLM:
         self.next_replies: list[str] = []
         self.calls: list[tuple[list[Message], str]] = []
 
-    def chat(self, messages, *, system, images=None, temperature=0.6):  # noqa: ARG002
+    def chat(self, messages, *, system, images=None, temperature=0.6, max_tokens=None):  # noqa: ARG002
         self.calls.append((list(messages), system))
         if self.next_replies:
             text = self.next_replies.pop(0)
@@ -609,7 +609,7 @@ def test_ensure_reading_aids_only_backfills_the_missing_one() -> None:
 
 def test_ensure_reading_aids_is_best_effort_on_error() -> None:
     class BoomLLM(FakeLLM):
-        def chat(self, messages, *, system, images=None, temperature=0.6):  # noqa: ARG002
+        def chat(self, messages, *, system, images=None, temperature=0.6, max_tokens=None):  # noqa: ARG002
             raise RuntimeError("provider down")
 
     parsed = ParsedReply(text="今日は。", hiragana=None, english=None)

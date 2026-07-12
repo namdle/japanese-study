@@ -110,7 +110,7 @@ def session_setup(
     class FakeLLM:
         name = "fake-llm"
 
-        def chat(self, messages, *, system, images=None, temperature=0.6):  # noqa: ARG002
+        def chat(self, messages, *, system, images=None, temperature=0.6, max_tokens=None):  # noqa: ARG002
             text = queued_replies.pop(0) if queued_replies else "そうですね"
             return ChatResponse(text=text)
 

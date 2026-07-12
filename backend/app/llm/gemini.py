@@ -39,6 +39,7 @@ class GeminiProvider(LLMProvider):
         system: str,
         images: list[bytes] | None = None,
         temperature: float = 0.6,
+        max_tokens: int | None = None,
     ) -> ChatResponse:
         contents: list[genai_types.Content] = []
         for i, m in enumerate(messages):
@@ -63,6 +64,7 @@ class GeminiProvider(LLMProvider):
         config = genai_types.GenerateContentConfig(
             system_instruction=system,
             temperature=temperature,
+            max_output_tokens=max_tokens,
         )
         response = self._client.models.generate_content(
             model=self._model,

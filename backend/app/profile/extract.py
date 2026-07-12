@@ -387,6 +387,11 @@ def extract_and_persist(
             [Message(role="user", content=user_message)],
             system=EXTRACTION_SYSTEM_PROMPT,
             temperature=0.2,
+            # A full extraction (up to 15 vocab + grammar + mistakes + topics)
+            # is Japanese-heavy JSON that easily exceeds the 1024-token default
+            # and gets truncated mid-object, which then fails to parse. Give it
+            # comfortable headroom so the JSON always closes.
+            max_tokens=4096,
         )
     except Exception as exc:
         logger.warning("Profile extraction LLM call failed: %s", exc)

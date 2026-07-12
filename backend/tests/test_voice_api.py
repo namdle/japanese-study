@@ -30,7 +30,7 @@ class FakeLLM:
         self.reply = reply
         self.calls: list[tuple[list[Message], str]] = []
 
-    def chat(self, messages, *, system, images=None, temperature=0.6):  # noqa: ARG002
+    def chat(self, messages, *, system, images=None, temperature=0.6, max_tokens=None):  # noqa: ARG002
         self.calls.append((list(messages), system))
         return ChatResponse(text=self.reply)
 

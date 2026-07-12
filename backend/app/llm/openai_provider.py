@@ -39,6 +39,7 @@ class OpenAIProvider(LLMProvider):
         system: str,
         images: list[bytes] | None = None,
         temperature: float = 0.6,
+        max_tokens: int | None = None,
     ) -> ChatResponse:
         oai_messages: list[dict] = [{"role": "system", "content": system}]
         for i, m in enumerate(messages):
@@ -60,10 +61,14 @@ class OpenAIProvider(LLMProvider):
             else:
                 oai_messages.append({"role": m.role, "content": m.content})
 
+        extra: dict = {}
+        if max_tokens is not None:
+            extra["max_tokens"] = max_tokens
         response = self._client.chat.completions.create(
             model=self._model,
             messages=oai_messages,
             temperature=temperature,
+            **extra,
         )
         text = response.choices[0].message.content or ""
         return ChatResponse(text=text.strip())

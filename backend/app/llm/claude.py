@@ -53,6 +53,7 @@ class ClaudeProvider(LLMProvider):
         system: str,
         images: list[bytes] | None = None,
         temperature: float = 0.6,
+        max_tokens: int | None = None,
     ) -> ChatResponse:
         anthropic_messages: list[dict] = [
             {"role": m.role, "content": m.content} for m in messages
@@ -84,7 +85,7 @@ class ClaudeProvider(LLMProvider):
             model=self._model,
             system=system,
             messages=anthropic_messages,
-            max_tokens=self._max_tokens,
+            max_tokens=max_tokens or self._max_tokens,
         )
         text = "".join(
             getattr(block, "text", "") for block in response.content

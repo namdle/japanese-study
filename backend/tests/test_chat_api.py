@@ -33,6 +33,7 @@ class FakeProvider:
         system: str,
         images=None,  # noqa: ARG002 - matches LLMProvider shape
         temperature: float = 0.6,  # noqa: ARG002
+        max_tokens=None,  # noqa: ARG002
     ) -> ChatResponse:
         self.calls.append((list(messages), system))
         return ChatResponse(text=self.reply)

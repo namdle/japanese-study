@@ -45,6 +45,7 @@ class BedrockProvider(LLMProvider):
         system: str,
         images: list[bytes] | None = None,
         temperature: float = 0.6,
+        max_tokens: int | None = None,
     ) -> ChatResponse:
         bedrock_messages: list[dict] = [
             {"role": m.role, "content": m.content} for m in messages
@@ -74,7 +75,7 @@ class BedrockProvider(LLMProvider):
             "anthropic_version": "bedrock-2023-05-31",
             "system": system,
             "messages": bedrock_messages,
-            "max_tokens": 1024,
+            "max_tokens": max_tokens or 1024,
             "temperature": temperature,
         }
         response = self._client.invoke_model(

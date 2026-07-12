@@ -152,7 +152,7 @@ class FakeLLM:
     def __init__(self) -> None:
         self.calls: list[dict] = []
 
-    def chat(self, messages, *, system, images=None, temperature=0.6):  # noqa: ARG002
+    def chat(self, messages, *, system, images=None, temperature=0.6, max_tokens=None):  # noqa: ARG002
         self.calls.append({"messages": list(messages), "system": system, "images": images})
         return ChatResponse(text="画像を見ましたね。")
 

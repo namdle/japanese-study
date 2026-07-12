@@ -38,6 +38,7 @@ class LLMProvider(Protocol):
         system: str,
         images: list[bytes] | None = None,
         temperature: float = 0.6,
+        max_tokens: int | None = None,
     ) -> ChatResponse: ...
 
 
