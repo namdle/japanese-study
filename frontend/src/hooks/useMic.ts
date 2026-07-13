@@ -9,6 +9,11 @@ interface UseMicOptions {
   // (voice-activity detection). The user can always stop manually. 0/undefined
   // disables auto-stop.
   autoStopMs?: number;
+  // Live streaming: when set, MediaRecorder emits a chunk every timesliceMs
+  // and each chunk is passed to onChunk as it is recorded (the full blob is
+  // still assembled and delivered via onStop, so fallbacks keep working).
+  timesliceMs?: number;
+  onChunk?: (chunk: Blob) => void;
 }
 
 interface UseMic {
@@ -63,6 +68,8 @@ export function useMic(options: UseMicOptions = {}): UseMic {
   const mimeRef = useRef<string | undefined>(undefined);
   const onStopRef = useRef(options.onStop);
   const autoStopMsRef = useRef(options.autoStopMs);
+  const timesliceMsRef = useRef(options.timesliceMs);
+  const onChunkRef = useRef(options.onChunk);
   const autoStopTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const vadIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -74,6 +81,12 @@ export function useMic(options: UseMicOptions = {}): UseMic {
   useEffect(() => {
     autoStopMsRef.current = options.autoStopMs;
   }, [options.autoStopMs]);
+  useEffect(() => {
+    timesliceMsRef.current = options.timesliceMs;
+  }, [options.timesliceMs]);
+  useEffect(() => {
+    onChunkRef.current = options.onChunk;
+  }, [options.onChunk]);
 
   // Tear down every auto-stop mechanism (silence timer, VAD poller, audio graph).
   const clearAutoStop = useCallback(() => {
@@ -186,7 +199,10 @@ export function useMic(options: UseMicOptions = {}): UseMic {
       const recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
       chunksRef.current = [];
       recorder.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+        if (e.data && e.data.size > 0) {
+          chunksRef.current.push(e.data);
+          onChunkRef.current?.(e.data);
+        }
       };
       recorder.onstop = () => {
         clearAutoStop();
@@ -204,7 +220,9 @@ export function useMic(options: UseMicOptions = {}): UseMic {
         setState('idle');
       };
       recorderRef.current = recorder;
-      recorder.start();
+      const timeslice = timesliceMsRef.current;
+      if (timeslice && timeslice > 0) recorder.start(timeslice);
+      else recorder.start();
       setState('recording');
 
       // Arm auto-stop (silence detection) if enabled. Manual stop clears it too.

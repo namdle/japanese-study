@@ -22,6 +22,7 @@ load_dotenv(Path(__file__).parent.parent.parent / ".env")
 
 # python-dotenv doesn't expand shell variables like $HOME, so do it manually.
 import os as _os
+
 for _k, _v in list(_os.environ.items()):
     _expanded = _os.path.expandvars(_v)
     if _expanded != _v:

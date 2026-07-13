@@ -25,6 +25,7 @@ naive byte concatenation plays cleanly in browsers.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable, Iterable, Iterator
 from typing import NamedTuple
 
 from app.speech.base import (
@@ -131,10 +132,32 @@ class GCloudSpeechProvider(SpeechProvider):
     ) -> str:
         from google.cloud import speech_v1
 
-        # Speech adaptation: bias recognition toward expected words. The learner's
-        # name goes in its own context at the maximum boost so it wins ambiguous
-        # cases (e.g. ナム vs ラム/ナムル); the lesson vocabulary gets a moderate
-        # boost. Without this, near-homophones win — e.g. ナム heard as 眠い.
+        # Speech adaptation: bias recognition toward expected words (e.g.
+        # ナム vs ラム/ナムル). Without this, near-homophones win.
+        # Let Google auto-detect the encoding by leaving `encoding` unset.
+        config = speech_v1.RecognitionConfig(
+            language_code=language,
+            enable_automatic_punctuation=True,
+            speech_contexts=self._speech_contexts(phrase_hints, strong_hints),
+        )
+        recognition_audio = speech_v1.RecognitionAudio(content=audio)
+        response = self._stt.recognize(config=config, audio=recognition_audio)
+        parts: list[str] = []
+        for result in response.results:
+            if result.alternatives:
+                parts.append(result.alternatives[0].transcript)
+        return " ".join(p.strip() for p in parts).strip()
+
+    def _speech_contexts(
+        self, phrase_hints: list[str] | None, strong_hints: list[str] | None
+    ) -> list:
+        """Speech-adaptation contexts shared by batch and streaming STT.
+
+        The learner's name gets its own maximum-boost context so it wins
+        ambiguous cases; the lesson vocabulary is a moderate boost.
+        """
+        from google.cloud import speech_v1
+
         speech_contexts = []
         strong = list(dict.fromkeys(h for h in (strong_hints or []) if h and h.strip()))
         if strong:
@@ -147,20 +170,74 @@ class GCloudSpeechProvider(SpeechProvider):
         )
         if vocab:
             speech_contexts.append(speech_v1.SpeechContext(phrases=vocab, boost=15.0))
+        return speech_contexts
 
-        # Let Google auto-detect the encoding by leaving `encoding` unset.
-        config = speech_v1.RecognitionConfig(
-            language_code=language,
-            enable_automatic_punctuation=True,
-            speech_contexts=speech_contexts,
+    def streaming_transcribe(
+        self,
+        chunks: Iterable[bytes],
+        *,
+        language: str = "ja-JP",
+        phrase_hints: list[str] | None = None,
+        strong_hints: list[str] | None = None,
+        auto_endpoint: bool = True,
+        on_interim: Callable[[str], None] | None = None,
+        on_endpoint: Callable[[], None] | None = None,
+    ) -> str:
+        """Streaming STT with server-side endpointing (optional capability).
+
+        `chunks` is a live stream of WEBM/Opus slices from the browser's
+        MediaRecorder (first chunk carries the container header; later ones
+        are continuations — exactly what Google's WEBM_OPUS streaming mode
+        expects).
+
+        With `auto_endpoint=True` (`single_utterance` mode), Google detects
+        the end of speech itself and finalizes, so the transcript is ready
+        the moment the learner stops talking — no client-side silence
+        window. With `auto_endpoint=False` — the learner turned auto-stop
+        off — Google keeps transcribing across pauses (multiple finals are
+        joined) until the chunk stream ends at manual stop.
+
+        Callbacks (invoked from the calling thread while responses stream):
+          on_interim(text): partial hypothesis, for live captions.
+          on_endpoint(): Google detected end of utterance — the caller
+              should tell the client to stop the mic. Never fires when
+              auto_endpoint is False.
+        """
+        from google.cloud import speech_v1
+
+        streaming_config = speech_v1.StreamingRecognitionConfig(
+            config=speech_v1.RecognitionConfig(
+                encoding=speech_v1.RecognitionConfig.AudioEncoding.WEBM_OPUS,
+                sample_rate_hertz=48000,  # browsers record Opus at 48 kHz
+                language_code=language,
+                enable_automatic_punctuation=True,
+                speech_contexts=self._speech_contexts(phrase_hints, strong_hints),
+            ),
+            interim_results=True,
+            single_utterance=auto_endpoint,
         )
-        recognition_audio = speech_v1.RecognitionAudio(content=audio)
-        response = self._stt.recognize(config=config, audio=recognition_audio)
-        parts: list[str] = []
-        for result in response.results:
-            if result.alternatives:
-                parts.append(result.alternatives[0].transcript)
-        return " ".join(p.strip() for p in parts).strip()
+
+        def requests() -> Iterator:
+            for chunk in chunks:
+                if chunk:
+                    yield speech_v1.StreamingRecognizeRequest(audio_content=chunk)
+
+        end_of_utterance = (
+            speech_v1.StreamingRecognizeResponse.SpeechEventType.END_OF_SINGLE_UTTERANCE
+        )
+        finals: list[str] = []
+        for response in self._stt.streaming_recognize(streaming_config, requests()):
+            if response.speech_event_type == end_of_utterance and on_endpoint is not None:
+                on_endpoint()
+            for result in response.results:
+                if not result.alternatives:
+                    continue
+                text = result.alternatives[0].transcript
+                if result.is_final:
+                    finals.append(text)
+                elif on_interim is not None:
+                    on_interim(text)
+        return " ".join(p.strip() for p in finals).strip()
 
     # ------------------------------------------------------------------ #
     # TTS

@@ -23,6 +23,32 @@
 > - Google `streaming_synthesize` was NOT used (voice/codec restrictions);
 >   per-sentence `synthesize` + MP3 concat matches the existing pattern.
 > - Tests: backend 188 passing (was 176), frontend 31 passing.
+>
+> **Task 5 (streaming STT) implemented 2026-07-13** — deployed after tasks
+> 1–4; pending real-mic testing:
+> - `WS /api/sessions/{id}/turn-audio/live` (auth via `?user=` — browsers
+>   can't set headers on WebSockets). Client streams MediaRecorder chunks
+>   (250ms timeslice) while the learner speaks; STT runs concurrently
+>   (gcloud `streaming_recognize`, WEBM_OPUS 48kHz, single_utterance, the
+>   name/vocab boost contexts carried over). Events: interim (live
+>   captions) → endpoint (server heard you finish; client stops the mic) →
+>   transcript → same text/audio/aids/done pipeline as SSE, shared via
+>   `_voice_reply_events`.
+> - Measured (real Google STT): transcript ready 0.1–0.4s after speech end
+>   vs ~1.1s upload+transcribe; first audio ~2.9s after speech end vs ~4.0s
+>   on the SSE flow. Note: Google's endpointer was slow on synthetic
+>   zero-silence test audio — real-mic behavior needs Nam's testing; the
+>   client VAD auto-stop remains as backstop (whichever fires first wins).
+> - Fallbacks: OpenAI speech profiles get `unsupported` → classic flow
+>   (Whisper API can't stream). Safari records mp4 → classic flow (gate:
+>   `isTypeSupported('audio/webm;codecs=opus')`). WS failure before the
+>   transcript persisted → the recorded blob is re-sent via the SSE
+>   endpoint; after persistence → error + resync (no duplicate turns).
+> - The Auto-stop toggle governs server endpointing too (bug found in
+>   Nam's testing: live mode auto-ended turns with Auto-stop off). The
+>   client passes `auto_end=0` → STT runs without `single_utterance`,
+>   keeps transcribing across pauses, and finalizes only on manual stop.
+> - Tests: backend 197, frontend 31. Vite proxy has `ws: true` for dev.
 
 > **Audience:** a capable coding agent (e.g. Fable) implementing this end to end.
 > **Written by:** the prior Claude Code session, after diagnosing the pipeline and a

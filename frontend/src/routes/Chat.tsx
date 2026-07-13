@@ -22,6 +22,13 @@ import {
   type LessonOption,
   type SessionDetail,
 } from '../api/sessions';
+import {
+  isLiveVoiceSupported,
+  LiveVoiceError,
+  LiveVoiceUnsupportedError,
+  openLiveVoiceTurn,
+  type LiveVoiceTurn,
+} from '../api/liveVoice';
 import type { User } from '../api/users';
 import { LessonStudy } from '../components/LessonStudy';
 import { useMic } from '../hooks/useMic';
@@ -82,6 +89,11 @@ export function Chat({ user }: ChatProps): JSX.Element {
   useEffect(() => {
     detailRef.current = detail;
   }, [detail]);
+  // Live (streaming STT) voice turn state. The refs let the stable mic
+  // callbacks reach the turn created by the most recent startLiveRecording.
+  const liveTurnRef = useRef<LiveVoiceTurn | null>(null);
+  const liveFinishRef = useRef<((blob: Blob) => Promise<void>) | null>(null);
+  const micStopRef = useRef<(() => void) | null>(null);
 
   const refresh = useCallback(async () => {
     setError(null);
@@ -257,10 +269,121 @@ export function Chat({ user }: ChatProps): JSX.Element {
     [refresh],
   );
 
+  // Mic stop dispatch: a live turn (streaming STT) finishes via its own
+  // WebSocket result; otherwise the recorded blob goes through the classic
+  // upload flow.
+  const handleMicStop = useCallback(
+    (blob: Blob) => {
+      const finish = liveFinishRef.current;
+      if (finish) {
+        liveTurnRef.current?.end();
+        liveFinishRef.current = null;
+        void finish(blob);
+      } else {
+        void handleVoiceTurn(blob);
+      }
+    },
+    [handleVoiceTurn],
+  );
+
+  // Live mode: gcloud is the only speech provider with streaming STT, and it
+  // needs WEBM/Opus (Safari records mp4 — it stays on the classic flow).
+  const liveVoice = user.speech_provider === 'gcloud' && isLiveVoiceSupported();
+
   const mic = useMic({
-    onStop: handleVoiceTurn,
+    onStop: handleMicStop,
     autoStopMs: autoStopEnabled ? user.auto_stop_seconds * 1000 : 0,
+    // In live mode, stream mic chunks to the server as they're recorded.
+    timesliceMs: liveVoice ? 250 : undefined,
+    onChunk: useCallback((chunk: Blob) => {
+      liveTurnRef.current?.sendChunk(chunk);
+    }, []),
   });
+  const micStart = mic.start;
+  const micStop = mic.stop;
+  useEffect(() => {
+    micStopRef.current = micStop;
+  }, [micStop]);
+
+  const startLiveRecording = useCallback(async () => {
+    const current = detailRef.current;
+    if (!current) return;
+    setError(null);
+    setPendingUserText(null);
+    setPendingReply('');
+    const player = createAudioQueue();
+    let streamedAudio = false;
+    let turn: LiveVoiceTurn;
+    try {
+      turn = await openLiveVoiceTurn(
+        current.session.id,
+        {
+          onInterim: (t) => setPendingUserText(t),
+          onEndpoint: () => micStopRef.current?.(), // server heard you finish
+          onTranscript: (t) => setPendingUserText(t),
+          onTextDelta: (d) => setPendingReply((prev) => prev + d),
+          onAudioChunk: (bytes, mime) => {
+            streamedAudio = true;
+            player.enqueue(bytes, mime);
+          },
+        },
+        // Auto-stop off = no automatic end of turn, server-side included:
+        // STT keeps transcribing across pauses until the learner taps Stop.
+        { autoEndpoint: autoStopEnabled },
+      );
+    } catch {
+      // Couldn't open the socket — record normally and upload at the end.
+      liveTurnRef.current = null;
+      liveFinishRef.current = null;
+      await micStart();
+      return;
+    }
+    liveTurnRef.current = turn;
+    liveFinishRef.current = async (blob: Blob) => {
+      liveTurnRef.current = null;
+      setBusy('sending');
+      try {
+        const updated = await turn.result;
+        if (streamedAudio) {
+          const lastWithAudio = [...updated.turns]
+            .reverse()
+            .find((t) => t.role === 'assistant' && t.audio_url);
+          if (lastWithAudio?.audio_url) {
+            lastPlayedAudioUrl.current = lastWithAudio.audio_url;
+          }
+        }
+        setDetail(updated);
+        setBusy('idle');
+        setPendingUserText(null);
+        setPendingReply('');
+      } catch (err) {
+        player.stop();
+        const persisted = err instanceof LiveVoiceError && err.turnPersisted;
+        if (err instanceof LiveVoiceUnsupportedError || !persisted) {
+          // Nothing was saved server-side — safe to re-send the recording
+          // through the classic flow (it manages busy/pending itself).
+          await handleVoiceTurn(blob);
+          return;
+        }
+        // The user turn (at least) was saved; don't re-send — resync.
+        setError(err instanceof Error ? err.message : String(err));
+        setBusy('idle');
+        setPendingUserText(null);
+        setPendingReply('');
+        void refresh();
+      }
+    };
+    await micStart();
+  }, [micStart, handleVoiceTurn, refresh, autoStopEnabled]);
+
+  // Tear the socket down if the learner navigates away mid-turn.
+  useEffect(() => {
+    return () => {
+      liveFinishRef.current = null;
+      liveTurnRef.current?.abort();
+      liveTurnRef.current = null;
+    };
+  }, []);
 
   const toggleAutoStop = (enabled: boolean) => {
     setAutoStopEnabled(enabled);
@@ -296,8 +419,12 @@ export function Chat({ user }: ChatProps): JSX.Element {
   };
 
   const toggleMic = () => {
-    if (mic.state === 'recording') mic.stop();
-    else if (mic.state === 'idle' || mic.state === 'denied') void mic.start();
+    if (mic.state === 'recording') {
+      mic.stop();
+    } else if (mic.state === 'idle' || mic.state === 'denied') {
+      if (liveVoice) void startLiveRecording();
+      else void mic.start();
+    }
   };
 
   const sending = busy === 'sending' || busy === 'starting' || busy === 'ending';
@@ -533,7 +660,7 @@ export function Chat({ user }: ChatProps): JSX.Element {
             )}
           </li>
         ))}
-        {busy === 'sending' && pendingUserText && (
+        {pendingUserText && (
           <li className="transcript__turn transcript__turn--user" data-testid="turn-user">
             <span className="transcript__role">{user.name}</span>
             <span className="transcript__content">{pendingUserText}</span>

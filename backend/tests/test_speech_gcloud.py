@@ -214,3 +214,95 @@ def test_tutor_voice_from_string_falls_back_to_misa() -> None:
     assert TutorVoice.from_string("Misa") == TutorVoice.MISA
     assert TutorVoice.from_string("Hiro") == TutorVoice.HIRO
     assert TutorVoice.from_string("Bogus") == TutorVoice.MISA
+
+
+# --------------------------------------------------------------------------- #
+# Streaming STT
+# --------------------------------------------------------------------------- #
+
+
+def _stream_response(*, transcript=None, is_final=False, event=0):
+    results = []
+    if transcript is not None:
+        results = [
+            SimpleNamespace(
+                is_final=is_final,
+                alternatives=[SimpleNamespace(transcript=transcript)],
+            )
+        ]
+    return SimpleNamespace(speech_event_type=event, results=results)
+
+
+def test_streaming_transcribe_streams_chunks_and_reports_events() -> None:
+    from google.cloud import speech_v1
+
+    end_event = (
+        speech_v1.StreamingRecognizeResponse.SpeechEventType.END_OF_SINGLE_UTTERANCE
+    )
+    stt = MagicMock()
+    sent_chunks: list[bytes] = []
+
+    def fake_streaming_recognize(config, requests):
+        for req in requests:
+            sent_chunks.append(req.audio_content)
+        yield _stream_response(transcript="こん", is_final=False)
+        yield _stream_response(event=end_event)
+        yield _stream_response(transcript="こんにちは。", is_final=True)
+
+    stt.streaming_recognize.side_effect = fake_streaming_recognize
+    provider = GCloudSpeechProvider(stt_client=stt, tts_client=MagicMock())
+
+    interims: list[str] = []
+    endpoints: list[bool] = []
+    text = provider.streaming_transcribe(
+        iter([b"chunk1", b"chunk2", b""]),
+        phrase_hints=["はじめまして"],
+        strong_hints=["ナム"],
+        on_interim=interims.append,
+        on_endpoint=lambda: endpoints.append(True),
+    )
+
+    assert text == "こんにちは。"
+    assert interims == ["こん"]
+    assert endpoints == [True]
+    assert sent_chunks == [b"chunk1", b"chunk2"]  # empty chunks skipped
+
+    config = stt.streaming_recognize.call_args.args[0]
+    assert config.single_utterance is True
+    assert config.interim_results is True
+    rec = config.config
+    from google.cloud.speech_v1 import RecognitionConfig
+
+    assert rec.encoding == RecognitionConfig.AudioEncoding.WEBM_OPUS
+    assert rec.sample_rate_hertz == 48000
+    # The name keeps its own max-boost context, vocab a moderate one.
+    assert list(rec.speech_contexts[0].phrases) == ["ナム"]
+    assert rec.speech_contexts[0].boost > rec.speech_contexts[1].boost
+
+
+def test_streaming_transcribe_joins_multiple_finals() -> None:
+    stt = MagicMock()
+    stt.streaming_recognize.return_value = iter(
+        [
+            _stream_response(transcript="はい。", is_final=True),
+            _stream_response(transcript="そうです。", is_final=True),
+        ]
+    )
+    provider = GCloudSpeechProvider(stt_client=stt, tts_client=MagicMock())
+
+    text = provider.streaming_transcribe(iter([b"c"]))
+    assert text == "はい。 そうです。"
+
+
+def test_streaming_transcribe_auto_endpoint_off_disables_single_utterance() -> None:
+    """Auto-stop off: Google must keep transcribing across pauses instead of
+    finalizing at the first silence."""
+    stt = MagicMock()
+    stt.streaming_recognize.return_value = iter([])
+    provider = GCloudSpeechProvider(stt_client=stt, tts_client=MagicMock())
+
+    provider.streaming_transcribe(iter([b"c"]), auto_endpoint=False)
+
+    config = stt.streaming_recognize.call_args.args[0]
+    assert config.single_utterance is False
+    assert config.interim_results is True

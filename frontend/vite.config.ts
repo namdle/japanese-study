@@ -15,6 +15,7 @@ export default defineConfig({
       '/api': {
         target: backendTarget,
         changeOrigin: true,
+        ws: true, // live voice turns stream mic audio over a WebSocket
       },
     },
   },

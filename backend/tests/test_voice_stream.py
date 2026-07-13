@@ -321,3 +321,205 @@ def test_stream_turn_rejects_empty_audio(stream_setup) -> None:
         files={"audio": ("t.webm", io.BytesIO(b""), "audio/webm")},
     )
     assert res.status_code == 400
+
+
+# --------------------------------------------------------------------------- #
+# Live WebSocket endpoint (streaming STT)
+# --------------------------------------------------------------------------- #
+
+
+class FakeLiveSpeech(FakeSpeech):
+    """Speech fake with the streaming_transcribe capability."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.received_chunks: list[bytes] = []
+        self.last_auto_endpoint: bool | None = None
+        self.last_on_endpoint: object = "unset"
+
+    def streaming_transcribe(  # noqa: ARG002
+        self,
+        chunks,
+        *,
+        language: str = "ja-JP",
+        phrase_hints: list[str] | None = None,
+        strong_hints: list[str] | None = None,
+        auto_endpoint: bool = True,
+        on_interim=None,
+        on_endpoint=None,
+    ) -> str:
+        self.last_auto_endpoint = auto_endpoint
+        self.last_on_endpoint = on_endpoint
+        for chunk in chunks:
+            self.received_chunks.append(chunk)
+            if on_interim is not None:
+                on_interim("こん…")
+        if on_endpoint is not None:
+            on_endpoint()
+        return self.transcript
+
+
+def _collect_ws_events(ws) -> list[dict]:
+    """Read JSON messages until the socket closes."""
+    events = []
+    while True:
+        try:
+            events.append(ws.receive_json())
+        except Exception:
+            return events
+
+
+def test_live_turn_streams_stt_and_reply(stream_setup, monkeypatch) -> None:
+    client, llm, _speech, learner_id = stream_setup
+    session_id = _start_session(client, learner_id)
+
+    import app.api.sessions as sessions_mod
+
+    live_speech = FakeLiveSpeech()
+    monkeypatch.setattr(sessions_mod, "get_provider_for_user", lambda user: llm)
+    monkeypatch.setattr(
+        sessions_mod, "get_speech_provider_for_user", lambda user: live_speech
+    )
+
+    llm.stream_deltas = ["そうですね。", "\n[EN] I see."]
+    with client.websocket_connect(
+        f"/api/sessions/{session_id}/turn-audio/live?user={learner_id}"
+    ) as ws:
+        ws.send_bytes(b"chunk-a")
+        ws.send_bytes(b"chunk-b")
+        ws.send_text(json.dumps({"type": "end"}))
+        events = _collect_ws_events(ws)
+
+    names = [e["event"] for e in events]
+    # STT phase: live captions + server endpoint signal, then the reply.
+    assert names[0] == "interim"
+    assert "endpoint" in names
+    assert "transcript" in names
+    t_idx = names.index("transcript")
+    assert events[t_idx]["data"]["text"] == "こんにちは"
+    assert "text" in names[t_idx:] and "audio" in names[t_idx:]
+    assert names[-1] == "done"
+
+    assert live_speech.received_chunks == [b"chunk-a", b"chunk-b"]
+    done = events[-1]["data"]
+    assert done["turns"][-2]["role"] == "user"
+    assert done["turns"][-2]["text"] == "こんにちは"
+    assert done["turns"][-1]["text"] == "そうですね。"
+    assert done["turns"][-1]["english"] == "I see."
+
+
+def test_live_turn_auto_end_off_disables_server_endpointing(
+    stream_setup, monkeypatch
+) -> None:
+    """Auto-stop disabled → no server endpointing: STT must run without
+    single_utterance and the endpoint signal must never reach the client."""
+    client, llm, _speech, learner_id = stream_setup
+    session_id = _start_session(client, learner_id)
+
+    import app.api.sessions as sessions_mod
+
+    live_speech = FakeLiveSpeech()
+    monkeypatch.setattr(sessions_mod, "get_provider_for_user", lambda user: llm)
+    monkeypatch.setattr(
+        sessions_mod, "get_speech_provider_for_user", lambda user: live_speech
+    )
+
+    with client.websocket_connect(
+        f"/api/sessions/{session_id}/turn-audio/live?user={learner_id}&auto_end=0"
+    ) as ws:
+        ws.send_bytes(b"chunk")
+        ws.send_text(json.dumps({"type": "end"}))
+        events = _collect_ws_events(ws)
+
+    assert live_speech.last_auto_endpoint is False
+    assert live_speech.last_on_endpoint is None
+    names = [e["event"] for e in events]
+    assert "endpoint" not in names
+    assert names[-1] == "done"
+
+
+def test_live_turn_auto_end_defaults_on(stream_setup, monkeypatch) -> None:
+    client, llm, _speech, learner_id = stream_setup
+    session_id = _start_session(client, learner_id)
+
+    import app.api.sessions as sessions_mod
+
+    live_speech = FakeLiveSpeech()
+    monkeypatch.setattr(sessions_mod, "get_provider_for_user", lambda user: llm)
+    monkeypatch.setattr(
+        sessions_mod, "get_speech_provider_for_user", lambda user: live_speech
+    )
+
+    with client.websocket_connect(
+        f"/api/sessions/{session_id}/turn-audio/live?user={learner_id}"
+    ) as ws:
+        ws.send_bytes(b"chunk")
+        ws.send_text(json.dumps({"type": "end"}))
+        events = _collect_ws_events(ws)
+
+    assert live_speech.last_auto_endpoint is True
+    assert "endpoint" in [e["event"] for e in events]
+
+
+def test_live_turn_unsupported_provider_tells_client_to_fall_back(
+    stream_setup, monkeypatch
+) -> None:
+    client, llm, speech, learner_id = stream_setup
+    session_id = _start_session(client, learner_id)
+
+    import app.api.sessions as sessions_mod
+
+    # The plain FakeSpeech has no streaming_transcribe (like the OpenAI provider).
+    monkeypatch.setattr(sessions_mod, "get_provider_for_user", lambda user: llm)
+    monkeypatch.setattr(
+        sessions_mod, "get_speech_provider_for_user", lambda user: speech
+    )
+
+    with client.websocket_connect(
+        f"/api/sessions/{session_id}/turn-audio/live?user={learner_id}"
+    ) as ws:
+        events = _collect_ws_events(ws)
+    assert [e["event"] for e in events] == ["unsupported"]
+
+
+def test_live_turn_rejects_wrong_user(stream_setup, monkeypatch) -> None:
+    client, llm, _speech, learner_id = stream_setup
+    session_id = _start_session(client, learner_id)
+
+    import app.api.sessions as sessions_mod
+
+    live_speech = FakeLiveSpeech()
+    monkeypatch.setattr(sessions_mod, "get_provider_for_user", lambda user: llm)
+    monkeypatch.setattr(
+        sessions_mod, "get_speech_provider_for_user", lambda user: live_speech
+    )
+
+    with client.websocket_connect(
+        f"/api/sessions/{session_id}/turn-audio/live?user=99999"
+    ) as ws:
+        events = _collect_ws_events(ws)
+    assert events[0]["event"] == "error"
+
+
+def test_live_turn_empty_transcript_reports_error(stream_setup, monkeypatch) -> None:
+    client, llm, _speech, learner_id = stream_setup
+    session_id = _start_session(client, learner_id)
+
+    import app.api.sessions as sessions_mod
+
+    live_speech = FakeLiveSpeech()
+    live_speech.transcript = "   "
+    monkeypatch.setattr(sessions_mod, "get_provider_for_user", lambda user: llm)
+    monkeypatch.setattr(
+        sessions_mod, "get_speech_provider_for_user", lambda user: live_speech
+    )
+
+    with client.websocket_connect(
+        f"/api/sessions/{session_id}/turn-audio/live?user={learner_id}"
+    ) as ws:
+        ws.send_bytes(b"chunk")
+        ws.send_text(json.dumps({"type": "end"}))
+        events = _collect_ws_events(ws)
+
+    assert events[-1]["event"] == "error"
+    assert "speech" in events[-1]["data"]["detail"].lower()

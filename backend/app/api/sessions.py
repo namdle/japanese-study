@@ -12,15 +12,27 @@ away and back resumes the active session via GET /api/sessions/active.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
 import uuid
 from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
+from queue import SimpleQueue
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+import anyio
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    UploadFile,
+    WebSocket,
+    status,
+)
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, insert, select, update
@@ -31,11 +43,13 @@ from app.api.voice import get_speech_provider_dep
 from app.config import get_settings
 from app.curriculum.study import extract_study_sections
 from app.db import (
+    get_engine,
     lesson_plans_table,
     lessons_table,
     session_turns_table,
     sessions_table,
     topics_table,
+    users_table,
 )
 from app.deps import CurrentUser, EngineDep
 from app.llm.base import (
@@ -44,6 +58,7 @@ from app.llm.base import (
     build_tutor_system_prompt,
     parse_tutor_reply,
 )
+from app.llm.router import get_provider_for_user
 from app.session.orchestrator import (
     NextLesson,
     get_lesson_for_session,
@@ -53,6 +68,7 @@ from app.session.streaming import SentenceStreamer
 from app.session.uploads import detect_image_mime, save_upload
 from app.speech.base import SpeechProvider, TutorVoice
 from app.speech.hints import extract_vocab_hints
+from app.speech.router import get_speech_provider_for_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/sessions", tags=["sessions"])
@@ -1040,28 +1056,27 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _stream_voice_reply(
+def _voice_reply_events(
     engine: Engine,
     session_row: Mapping[str, object],
     user: Mapping[str, object],
     llm: object,
     speech: SpeechProvider,
     session_id: int,
-    transcript: str,
-) -> Iterator[str]:
-    """SSE generator for a voice turn: stream the tutor's text sentence by
-    sentence, synthesizing and emitting audio for each sentence as soon as it
-    completes, so playback starts well before the full reply exists.
+) -> Iterator[tuple[str, dict]]:
+    """Voice-turn reply pipeline as a stream of (event, data) tuples: the
+    tutor's text sentence by sentence, synthesizing and emitting audio for
+    each sentence as soon as it completes, so playback starts well before the
+    full reply exists. Wrapped as SSE by the HTTP endpoint and as JSON
+    messages by the WebSocket endpoint.
 
-    Runs as a sync generator — Starlette iterates it in a threadpool, so the
+    Runs as a sync generator — callers iterate it in a threadpool, so the
     blocking LLM/TTS SDK calls never block the event loop.
 
-    Event order: transcript → (text, audio)* → aids → done. The reading-aid
-    backfill (when the tutor drops [HIRAGANA]/[EN]) happens AFTER all audio
-    has been emitted, so it is no longer on the listening-latency path.
+    Event order: (text, audio)* → aids → done. The reading-aid backfill
+    (when the tutor drops [HIRAGANA]/[EN]) happens AFTER all audio has been
+    emitted, so it is no longer on the listening-latency path.
     """
-    yield _sse("transcript", {"text": transcript})
-
     history = _build_messages_for_session(engine, session_id)
     system_prompt = _build_system_prompt(user, session_row, engine)
 
@@ -1078,7 +1093,7 @@ def _stream_voice_reply(
 
     def sentence_events(sentence: str) -> Iterator[str]:
         nonlocal audio_mime
-        yield _sse("text", {"delta": sentence})
+        yield ("text", {"delta": sentence})
         try:
             synth = speech.synthesize(sentence, voice=voice_enum)
         except Exception:
@@ -1087,7 +1102,7 @@ def _stream_voice_reply(
         if synth.audio:
             audio_parts.append(synth.audio)
             audio_mime = synth.mime_type
-            yield _sse(
+            yield (
                 "audio",
                 {
                     "b64": base64.b64encode(synth.audio).decode("ascii"),
@@ -1113,7 +1128,7 @@ def _stream_voice_reply(
     except Exception as exc:
         if not streamer.full_text.strip():
             logger.exception("Streaming LLM call failed before any text")
-            yield _sse("error", {"detail": f"LLM provider error: {exc}"})
+            yield ("error", {"detail": f"LLM provider error: {exc}"})
             return
         # Partial reply: keep what we have rather than dropping the turn.
         logger.warning("LLM stream failed mid-reply; keeping partial text", exc_info=True)
@@ -1125,7 +1140,7 @@ def _stream_voice_reply(
         try:
             full_text = _tutor_reply(llm, msgs, system_prompt).strip()
         except Exception as exc:
-            yield _sse("error", {"detail": f"LLM provider error: {exc}"})
+            yield ("error", {"detail": f"LLM provider error: {exc}"})
             return
         retry_streamer = SentenceStreamer()
         for sentence in retry_streamer.feed(full_text):
@@ -1145,7 +1160,7 @@ def _stream_voice_reply(
             if synth.audio:
                 audio_parts.append(synth.audio)
                 audio_mime = synth.mime_type
-                yield _sse(
+                yield (
                     "audio",
                     {
                         "b64": base64.b64encode(synth.audio).decode("ascii"),
@@ -1157,7 +1172,7 @@ def _stream_voice_reply(
 
     # Reading-aid backfill — off the audio path by design (audio already sent).
     parsed_reply = _ensure_reading_aids(llm, user, parsed_reply)
-    yield _sse(
+    yield (
         "aids",
         {"hiragana": parsed_reply.hiragana, "english": parsed_reply.english},
     )
@@ -1181,7 +1196,24 @@ def _stream_voice_reply(
         lesson=_load_lesson_info(engine, session_row.get("lesson_id")),  # type: ignore[arg-type]
         turns=_load_turns(engine, session_id),
     )
-    yield _sse("done", detail.model_dump(mode="json"))
+    yield ("done", detail.model_dump(mode="json"))
+
+
+def _stream_voice_reply(
+    engine: Engine,
+    session_row: Mapping[str, object],
+    user: Mapping[str, object],
+    llm: object,
+    speech: SpeechProvider,
+    session_id: int,
+    transcript: str,
+) -> Iterator[str]:
+    """SSE framing over the voice-reply event pipeline."""
+    yield _sse("transcript", {"text": transcript})
+    for event, data in _voice_reply_events(
+        engine, session_row, user, llm, speech, session_id
+    ):
+        yield _sse(event, data)
 
 
 @router.post("/{session_id}/turn-audio/stream")
@@ -1237,6 +1269,174 @@ def voice_turn_stream(
             "X-Accel-Buffering": "no",  # disable proxy buffering for SSE
         },
     )
+
+
+# --------------------------------------------------------------------------- #
+# Live voice turn: streaming STT over a WebSocket (LATENCY_PLAN Task 5)
+# --------------------------------------------------------------------------- #
+
+
+def _ws_error(detail: str) -> dict:
+    return {"event": "error", "data": {"detail": detail}}
+
+
+@router.websocket("/{session_id}/turn-audio/live")
+async def voice_turn_live(websocket: WebSocket, session_id: int) -> None:
+    """Live voice turn: the browser streams mic chunks (WEBM/Opus) as it
+    records; STT runs concurrently with speech, and Google's endpointer
+    detects the end of the utterance server-side. The transcript is ready
+    the instant the learner stops talking — no upload+transcribe leg and no
+    client-side silence window — then the usual streamed reply pipeline runs
+    over the same socket.
+
+    Protocol (client → server): binary frames = audio chunks; a text frame
+    '{"type":"end"}' finalizes early (manual stop / client VAD backstop).
+    Server → client: JSON {"event", "data"} messages — "interim" (live
+    caption), "endpoint" (stop the mic), then the same transcript/text/
+    audio/aids/done events as the SSE endpoint. "unsupported" means the
+    user's speech provider can't stream; the client falls back to the
+    blob-upload flow.
+
+    Auth: browsers can't set headers on WebSockets, so the profile id comes
+    from the `user` query parameter (same trust model as X-User-Id).
+
+    `auto_end=0` disables server-side endpointing (the learner turned the
+    Auto-stop feature off): STT keeps transcribing across pauses until they
+    stop the mic manually. Default is on.
+    """
+    await websocket.accept()
+
+    engine = get_engine()
+
+    async def fail(detail: str) -> None:
+        try:
+            await websocket.send_json(_ws_error(detail))
+            await websocket.close()
+        except Exception:  # pragma: no cover - socket already gone
+            pass
+
+    # -- Resolve profile + session (the header dep can't run for WS). ----- #
+    raw_user = websocket.query_params.get("user", "")
+    try:
+        user_id = int(raw_user)
+    except ValueError:
+        await fail("Missing or invalid 'user' query parameter.")
+        return
+    with engine.connect() as conn:
+        user = conn.execute(
+            select(users_table).where(users_table.c.id == user_id)
+        ).mappings().one_or_none()
+    if user is None:
+        await fail("Unknown profile.")
+        return
+
+    session_row = _load_session(engine, session_id)
+    if (
+        session_row is None
+        or int(session_row["user_id"]) != user_id
+        or session_row["ended_at"] is not None
+    ):
+        await fail("Session not found or has ended.")
+        return
+
+    try:
+        llm = get_provider_for_user(user)
+        speech = get_speech_provider_for_user(user)
+    except Exception as exc:
+        await fail(str(exc))
+        return
+
+    streaming_transcribe = getattr(speech, "streaming_transcribe", None)
+    if streaming_transcribe is None:
+        # e.g. the OpenAI speech provider (Whisper has no streaming API).
+        try:
+            await websocket.send_json({"event": "unsupported", "data": {}})
+            await websocket.close()
+        except Exception:  # pragma: no cover - socket already gone
+            pass
+        return
+
+    strong_hints, vocab_hints = _session_phrase_hints(engine, user, session_row)
+    auto_endpoint = websocket.query_params.get("auto_end", "1") != "0"
+
+    # -- Pump audio frames into a queue the STT worker thread consumes. --- #
+    audio_q: SimpleQueue[bytes | None] = SimpleQueue()
+
+    async def receive_audio() -> None:
+        try:
+            while True:
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    break
+                if message.get("bytes"):
+                    audio_q.put(message["bytes"])
+                elif message.get("text"):
+                    try:
+                        if json.loads(message["text"]).get("type") == "end":
+                            break
+                    except json.JSONDecodeError:
+                        pass
+        finally:
+            audio_q.put(None)  # always release the STT thread
+
+    def run_stt() -> str:
+        def on_interim(text: str) -> None:
+            anyio.from_thread.run(
+                websocket.send_json, {"event": "interim", "data": {"text": text}}
+            )
+
+        def on_endpoint() -> None:
+            anyio.from_thread.run(
+                websocket.send_json, {"event": "endpoint", "data": {}}
+            )
+
+        return streaming_transcribe(
+            iter(audio_q.get, None),
+            phrase_hints=vocab_hints,
+            strong_hints=strong_hints,
+            auto_endpoint=auto_endpoint,
+            on_interim=on_interim,
+            on_endpoint=on_endpoint if auto_endpoint else None,
+        )
+
+    receiver = asyncio.create_task(receive_audio())
+    try:
+        transcript = (await anyio.to_thread.run_sync(run_stt)).strip()
+    except Exception as exc:
+        receiver.cancel()
+        logger.warning("Streaming STT failed", exc_info=True)
+        await fail(f"Speech-to-text error: {exc}")
+        return
+
+    # STT is done; stop consuming (the client may still flush a few frames).
+    if not receiver.done():
+        receiver.cancel()
+
+    if not transcript:
+        await fail("Could not detect any speech in the recording. Try again.")
+        return
+
+    _append_turn(engine, session_id, role="user", text=transcript)
+
+    def pump_reply() -> None:
+        anyio.from_thread.run(
+            websocket.send_json,
+            {"event": "transcript", "data": {"text": transcript}},
+        )
+        for event, data in _voice_reply_events(
+            engine, session_row, user, llm, speech, session_id
+        ):
+            anyio.from_thread.run(
+                websocket.send_json, {"event": event, "data": data}
+            )
+
+    try:
+        await anyio.to_thread.run_sync(pump_reply)
+        await websocket.close()
+    except Exception:
+        # Client went away mid-reply; the turn is persisted, so a refresh
+        # resyncs. Nothing useful left to send.
+        logger.warning("Live voice turn socket closed mid-reply", exc_info=True)
 
 
 @router.post("/{session_id}/end", response_model=SessionOut)
