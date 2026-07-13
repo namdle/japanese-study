@@ -178,6 +178,12 @@ def build_tutor_system_prompt(
             "the helper lines inside the Japanese reply itself, and do NOT add "
             "any other markers or commentary."
         )
+        lines.append(
+            "These helper lines are a required part of your output format for "
+            "every single message, no matter how long the conversation gets. "
+            "A reply that is missing them is incomplete. Always finish your "
+            "Japanese reply first, then put the helper line(s) at the very end."
+        )
 
     return "\n".join(lines)
 

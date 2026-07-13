@@ -19,12 +19,18 @@ interface UseMic {
 }
 
 // --- Voice-activity-detection tuning -------------------------------------- //
-const VAD_POLL_MS = 100; // how often we sample the mic level
+const VAD_POLL_MS = 50; // how often we sample the mic level (finer = snappier stop)
 const VAD_CALIBRATION_MS = 400; // measure ambient noise before judging speech
 const VAD_SPEECH_FACTOR = 3; // speech = this many× above the noise floor
 const VAD_SPEECH_ABS_MIN = 0.01; // absolute RMS floor so dead silence never counts
 const VAD_NOISE_FLOOR_MIN = 0.003;
 const VAD_NOISE_FLOOR_MAX = 0.02; // clamp so speaking during calibration can't blind us
+// Hysteresis: once speaking, quieter trailing audio (soft syllables, breathy
+// endings) still counts as speech for a short hangover window. This prevents
+// premature cuts, which makes short auto-stop settings (1-2s) safe to use.
+const VAD_KEEP_FACTOR = 2; // continue-speech threshold, relative to noise floor
+const VAD_KEEP_ABS_MIN = 0.006;
+const VAD_HANGOVER_MS = 400; // how long after speech the lower threshold applies
 // Hard safety cap: a single turn never records longer than this (also the sole
 // stop mechanism if the user never speaks, or if Web Audio is unavailable).
 const MAX_RECORDING_MS = 60_000;
@@ -146,10 +152,14 @@ export function useMic(options: UseMicOptions = {}): UseMic {
           calibrated = true;
         }
 
-        const threshold = Math.max(noiseFloor * VAD_SPEECH_FACTOR, VAD_SPEECH_ABS_MIN);
-        if (rms > threshold) {
+        const enterThreshold = Math.max(noiseFloor * VAD_SPEECH_FACTOR, VAD_SPEECH_ABS_MIN);
+        const keepThreshold = Math.max(noiseFloor * VAD_KEEP_FACTOR, VAD_KEEP_ABS_MIN);
+        if (rms > enterThreshold) {
           lastSpeech = now;
           hasSpoken = true;
+        } else if (hasSpoken && now - lastSpeech <= VAD_HANGOVER_MS && rms > keepThreshold) {
+          // Trailing soft speech: keep the silence clock from starting early.
+          lastSpeech = now;
         }
 
         // Stop after a silence gap following speech, or at the hard cap.

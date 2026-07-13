@@ -15,6 +15,7 @@ import {
   listLessonOptions,
   postTextTurn,
   postVoiceTurn,
+  postVoiceTurnStream,
   startSession,
   startSessionFromImage,
   type LessonInfo,
@@ -24,6 +25,7 @@ import {
 import type { User } from '../api/users';
 import { LessonStudy } from '../components/LessonStudy';
 import { useMic } from '../hooks/useMic';
+import { createAudioQueue } from '../lib/audioQueue';
 
 // Auto-stop on/off is remembered per profile in the browser.
 const autoStopKey = (userId: number): string => `autoStop:${userId}`;
@@ -63,6 +65,10 @@ export function Chat({ user }: ChatProps): JSX.Element {
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState<'idle' | 'starting' | 'sending' | 'ending' | 'uploading'>('idle');
   const [error, setError] = useState<string | null>(null);
+  // Live voice-turn state: the transcript appears as soon as STT finishes,
+  // and the tutor's reply text/audio stream in sentence by sentence.
+  const [pendingUserText, setPendingUserText] = useState<string | null>(null);
+  const [pendingReply, setPendingReply] = useState('');
   // Mode chosen on the lesson preview, applied on the next Start.
   const [pendingMode, setPendingMode] = useState<'freeform' | 'three_phase'>('freeform');
   // Summary returned by End session (only set when correction_style is end_of_session).
@@ -119,7 +125,7 @@ export function Chat({ user }: ChatProps): JSX.Element {
   useEffect(() => {
     if (!transcriptRef.current) return;
     transcriptRef.current.scrollTop = transcriptRef.current.scrollHeight;
-  }, [detail, busy]);
+  }, [detail, busy, pendingUserText, pendingReply]);
 
   // Auto-play newly arrived assistant audio (only the latest one we haven't played).
   useEffect(() => {
@@ -197,20 +203,59 @@ export function Chat({ user }: ChatProps): JSX.Element {
     }
   };
 
-  const handleVoiceTurn = useCallback(async (audioBlob: Blob) => {
-    const current = detailRef.current;
-    if (!current) return;
-    setBusy('sending');
-    setError(null);
-    try {
-      const updated = await postVoiceTurn(current.session.id, audioBlob);
-      setDetail(updated);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.detail : (err as Error).message);
-    } finally {
-      setBusy('idle');
-    }
-  }, []);
+  const handleVoiceTurn = useCallback(
+    async (audioBlob: Blob) => {
+      const current = detailRef.current;
+      if (!current) return;
+      setBusy('sending');
+      setError(null);
+      setPendingUserText(null);
+      setPendingReply('');
+      const player = createAudioQueue();
+      let streamedAudio = false;
+      try {
+        let updated: SessionDetail;
+        try {
+          updated = await postVoiceTurnStream(current.session.id, audioBlob, {
+            onTranscript: (t) => setPendingUserText(t),
+            onTextDelta: (d) => setPendingReply((prev) => prev + d),
+            onAudioChunk: (bytes, mime) => {
+              streamedAudio = true;
+              player.enqueue(bytes, mime);
+            },
+          });
+        } catch (err) {
+          // An older backend without the streaming endpoint → plain turn.
+          if (err instanceof ApiError && (err.status === 404 || err.status === 405)) {
+            updated = await postVoiceTurn(current.session.id, audioBlob);
+          } else {
+            throw err;
+          }
+        }
+        if (streamedAudio) {
+          // The reply already played while streaming; don't auto-replay the
+          // saved combined file when the turn list refreshes.
+          const lastWithAudio = [...updated.turns]
+            .reverse()
+            .find((t) => t.role === 'assistant' && t.audio_url);
+          if (lastWithAudio?.audio_url) {
+            lastPlayedAudioUrl.current = lastWithAudio.audio_url;
+          }
+        }
+        setDetail(updated);
+      } catch (err) {
+        player.stop();
+        setError(err instanceof ApiError ? err.detail : (err as Error).message);
+        // The turn may have been partially persisted server-side; resync.
+        void refresh();
+      } finally {
+        setBusy('idle');
+        setPendingUserText(null);
+        setPendingReply('');
+      }
+    },
+    [refresh],
+  );
 
   const mic = useMic({
     onStop: handleVoiceTurn,
@@ -488,10 +533,24 @@ export function Chat({ user }: ChatProps): JSX.Element {
             )}
           </li>
         ))}
-        {sending && busy === 'sending' && (
+        {busy === 'sending' && pendingUserText && (
+          <li className="transcript__turn transcript__turn--user" data-testid="turn-user">
+            <span className="transcript__role">{user.name}</span>
+            <span className="transcript__content">{pendingUserText}</span>
+          </li>
+        )}
+        {busy === 'sending' && (
           <li className="transcript__turn transcript__turn--assistant">
             <span className="transcript__role">{user.voice}</span>
-            <span className="transcript__content transcript__content--pending">…</span>
+            <span
+              className={
+                pendingReply
+                  ? 'transcript__content'
+                  : 'transcript__content transcript__content--pending'
+              }
+            >
+              {pendingReply || '…'}
+            </span>
           </li>
         )}
       </ol>

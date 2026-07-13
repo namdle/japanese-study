@@ -33,11 +33,73 @@ def test_claude_chat_calls_sdk_with_expected_args() -> None:
     assert response.text == "こんにちは!"
     sdk.messages.create.assert_called_once()
     kwargs = sdk.messages.create.call_args.kwargs
-    assert kwargs["system"] == "You are Misa"
-    assert kwargs["messages"] == [{"role": "user", "content": "やあ"}]
+    # System prompt goes as a cacheable block (prompt caching, latency Task 2).
+    assert kwargs["system"] == [
+        {
+            "type": "text",
+            "text": "You are Misa",
+            "cache_control": {"type": "ephemeral"},
+        }
+    ]
+    # The last message carries a cache breakpoint so the conversation prefix
+    # is reused on the following turn.
+    assert kwargs["messages"] == [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "やあ",
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ],
+        }
+    ]
     assert "temperature" not in kwargs
     assert kwargs["model"] == "claude-sonnet-5"
     assert kwargs["max_tokens"] == 1024
+
+
+def test_claude_chat_only_marks_last_message_for_cache() -> None:
+    sdk = MagicMock()
+    sdk.messages.create.return_value = _fake_sdk_response("ok")
+    provider = ClaudeProvider(client=sdk)
+
+    provider.chat(
+        [
+            Message(role="user", content="a"),
+            Message(role="assistant", content="b"),
+            Message(role="user", content="c"),
+        ],
+        system="sys",
+    )
+    messages = sdk.messages.create.call_args.kwargs["messages"]
+    assert messages[0] == {"role": "user", "content": "a"}
+    assert messages[1] == {"role": "assistant", "content": "b"}
+    assert messages[2]["content"][0]["cache_control"] == {"type": "ephemeral"}
+
+
+def test_claude_stream_chat_yields_deltas() -> None:
+    class FakeStream:
+        text_stream = iter(["こん", "にちは", "", "!"])
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    sdk = MagicMock()
+    sdk.messages.stream.return_value = FakeStream()
+    provider = ClaudeProvider(client=sdk)
+
+    deltas = list(
+        provider.stream_chat([Message(role="user", content="やあ")], system="sys")
+    )
+    assert deltas == ["こん", "にちは", "!"]  # empty deltas skipped
+    kwargs = sdk.messages.stream.call_args.kwargs
+    assert kwargs["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert "temperature" not in kwargs
 
 
 def test_claude_chat_concatenates_multi_block_text() -> None:

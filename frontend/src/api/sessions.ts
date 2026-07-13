@@ -145,6 +145,128 @@ export async function postVoiceTurn(sessionId: number, audio: Blob): Promise<Ses
   return (await res.json()) as SessionDetail;
 }
 
+// ---------------------------------------------------------------------- //
+// Streaming voice turn (SSE over fetch)
+// ---------------------------------------------------------------------- //
+
+export interface VoiceTurnStreamHandlers {
+  /** The learner's recognized speech, available as soon as STT finishes. */
+  onTranscript?: (text: string) => void;
+  /** Incremental tutor reply text (sentence-sized chunks, no aid markers). */
+  onTextDelta?: (delta: string) => void;
+  /** A synthesized audio chunk (one sentence) ready to play, in order. */
+  onAudioChunk?: (bytes: Uint8Array, mime: string) => void;
+  /** Reading aids, delivered after all audio chunks. */
+  onAids?: (hiragana: string | null, english: string | null) => void;
+}
+
+interface SseEvent {
+  event: string;
+  data: unknown;
+}
+
+function parseSseBlock(block: string): SseEvent | null {
+  let event: string | null = null;
+  let data: string | null = null;
+  for (const line of block.split('\n')) {
+    if (line.startsWith('event: ')) event = line.slice(7);
+    else if (line.startsWith('data: ')) data = line.slice(6);
+  }
+  if (!event || data === null) return null;
+  try {
+    return { event, data: JSON.parse(data) };
+  } catch {
+    return null;
+  }
+}
+
+function base64ToBytes(b64: string): Uint8Array {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+/**
+ * Voice turn against the streaming endpoint. Resolves with the persisted
+ * SessionDetail from the final `done` event. Throws ApiError on HTTP errors
+ * (before the stream starts) so callers can fall back to postVoiceTurn.
+ */
+export async function postVoiceTurnStream(
+  sessionId: number,
+  audio: Blob,
+  handlers: VoiceTurnStreamHandlers,
+): Promise<SessionDetail> {
+  const form = new FormData();
+  const filename = audio.type.includes('webm') ? 'recording.webm' : 'recording.audio';
+  form.append('audio', audio, filename);
+
+  const headers: Record<string, string> = {};
+  const profileId = getStoredProfileId();
+  if (profileId !== null) headers['X-User-Id'] = String(profileId);
+
+  const res = await fetch(`/api/sessions/${sessionId}/turn-audio/stream`, {
+    method: 'POST',
+    body: form,
+    headers,
+  });
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      const errBody = (await res.json()) as { detail?: unknown };
+      if (typeof errBody.detail === 'string') detail = errBody.detail;
+    } catch {
+      // ignore
+    }
+    throw new ApiError(res.status, detail);
+  }
+  if (!res.body) {
+    throw new ApiError(0, 'Streaming not supported by this browser.');
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let done: SessionDetail | null = null;
+  let streamError: string | null = null;
+
+  const handle = (raw: string) => {
+    const parsed = parseSseBlock(raw);
+    if (!parsed) return;
+    if (parsed.event === 'transcript') {
+      handlers.onTranscript?.((parsed.data as { text: string }).text);
+    } else if (parsed.event === 'text') {
+      handlers.onTextDelta?.((parsed.data as { delta: string }).delta);
+    } else if (parsed.event === 'audio') {
+      const d = parsed.data as { b64: string; mime: string };
+      handlers.onAudioChunk?.(base64ToBytes(d.b64), d.mime);
+    } else if (parsed.event === 'aids') {
+      const d = parsed.data as { hiragana: string | null; english: string | null };
+      handlers.onAids?.(d.hiragana, d.english);
+    } else if (parsed.event === 'error') {
+      streamError = (parsed.data as { detail?: string }).detail ?? 'Stream error';
+    } else if (parsed.event === 'done') {
+      done = parsed.data as SessionDetail;
+    }
+  };
+
+  for (;;) {
+    const { value, done: eof } = await reader.read();
+    if (eof) break;
+    buffer += decoder.decode(value, { stream: true });
+    let sep;
+    while ((sep = buffer.indexOf('\n\n')) !== -1) {
+      handle(buffer.slice(0, sep));
+      buffer = buffer.slice(sep + 2);
+    }
+  }
+  if (buffer.trim()) handle(buffer);
+
+  if (streamError) throw new ApiError(502, streamError);
+  if (!done) throw new ApiError(0, 'The tutor stream ended unexpectedly.');
+  return done;
+}
+
 export function endSession(sessionId: number): Promise<SessionMeta> {
   return apiRequest<SessionMeta>(`/api/sessions/${sessionId}/end`, { method: 'POST' });
 }

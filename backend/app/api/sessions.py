@@ -12,14 +12,16 @@ away and back resumes the active session via GET /api/sessions/active.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import uuid
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import func, insert, select, update
 from sqlalchemy.engine import Engine
@@ -47,6 +49,7 @@ from app.session.orchestrator import (
     get_lesson_for_session,
     pick_next_lesson,
 )
+from app.session.streaming import SentenceStreamer
 from app.session.uploads import detect_image_mime, save_upload
 from app.speech.base import SpeechProvider, TutorVoice
 from app.speech.hints import extract_vocab_hints
@@ -1020,6 +1023,219 @@ def voice_turn(
         session=_row_to_session(session_row),
         lesson=_load_lesson_info(engine, session_row.get("lesson_id")),  # type: ignore[arg-type]
         turns=_load_turns(engine, session_id),
+    )
+
+
+def _save_audio_file(audio_bytes: bytes, mime_type: str) -> str:
+    settings = get_settings()
+    audio_dir = settings.data_dir / "audio"
+    audio_dir.mkdir(parents=True, exist_ok=True)
+    extension = "mp3" if mime_type == "audio/mpeg" else "bin"
+    filename = f"{uuid.uuid4().hex}.{extension}"
+    (audio_dir / filename).write_bytes(audio_bytes)
+    return filename
+
+
+def _sse(event: str, data: dict) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _stream_voice_reply(
+    engine: Engine,
+    session_row: Mapping[str, object],
+    user: Mapping[str, object],
+    llm: object,
+    speech: SpeechProvider,
+    session_id: int,
+    transcript: str,
+) -> Iterator[str]:
+    """SSE generator for a voice turn: stream the tutor's text sentence by
+    sentence, synthesizing and emitting audio for each sentence as soon as it
+    completes, so playback starts well before the full reply exists.
+
+    Runs as a sync generator — Starlette iterates it in a threadpool, so the
+    blocking LLM/TTS SDK calls never block the event loop.
+
+    Event order: transcript → (text, audio)* → aids → done. The reading-aid
+    backfill (when the tutor drops [HIRAGANA]/[EN]) happens AFTER all audio
+    has been emitted, so it is no longer on the listening-latency path.
+    """
+    yield _sse("transcript", {"text": transcript})
+
+    history = _build_messages_for_session(engine, session_id)
+    system_prompt = _build_system_prompt(user, session_row, engine)
+
+    # Prefill guard: claude-sonnet-5 rejects histories ending in an
+    # assistant turn (same guard as _tutor_reply).
+    msgs = list(history)
+    while msgs and msgs[-1].role == "assistant":
+        msgs.pop()
+
+    voice_enum = TutorVoice.from_string(str(user["voice"]))
+    streamer = SentenceStreamer()
+    audio_parts: list[bytes] = []
+    audio_mime = "audio/mpeg"
+
+    def sentence_events(sentence: str) -> Iterator[str]:
+        nonlocal audio_mime
+        yield _sse("text", {"delta": sentence})
+        try:
+            synth = speech.synthesize(sentence, voice=voice_enum)
+        except Exception:
+            logger.warning("Chunked TTS failed for a sentence", exc_info=True)
+            return
+        if synth.audio:
+            audio_parts.append(synth.audio)
+            audio_mime = synth.mime_type
+            yield _sse(
+                "audio",
+                {
+                    "b64": base64.b64encode(synth.audio).decode("ascii"),
+                    "mime": synth.mime_type,
+                },
+            )
+
+    stream_fn = getattr(llm, "stream_chat", None)
+    try:
+        if stream_fn is not None:
+            deltas: Iterator[str] = stream_fn(msgs, system=system_prompt)
+        else:
+            # Provider without streaming: one blocking LLM call (with the
+            # usual retry/fallback), then still pipeline the TTS chunks.
+            deltas = iter([_tutor_reply(llm, msgs, system_prompt)])
+
+        for delta in deltas:
+            for sentence in streamer.feed(delta):
+                yield from sentence_events(sentence)
+        rest = streamer.flush()
+        if rest:
+            yield from sentence_events(rest)
+    except Exception as exc:
+        if not streamer.full_text.strip():
+            logger.exception("Streaming LLM call failed before any text")
+            yield _sse("error", {"detail": f"LLM provider error: {exc}"})
+            return
+        # Partial reply: keep what we have rather than dropping the turn.
+        logger.warning("LLM stream failed mid-reply; keeping partial text", exc_info=True)
+
+    full_text = streamer.full_text.strip()
+    if not full_text:
+        # Empty stream — retry via the non-streaming path (which itself
+        # retries once and then falls back to a gentle prompt).
+        try:
+            full_text = _tutor_reply(llm, msgs, system_prompt).strip()
+        except Exception as exc:
+            yield _sse("error", {"detail": f"LLM provider error: {exc}"})
+            return
+        retry_streamer = SentenceStreamer()
+        for sentence in retry_streamer.feed(full_text):
+            yield from sentence_events(sentence)
+        rest = retry_streamer.flush()
+        if rest:
+            yield from sentence_events(rest)
+
+    parsed_reply = parse_tutor_reply(full_text)
+    ja_for_tts = parsed_reply.text or full_text
+
+    # If chunked synthesis produced nothing (e.g. every sentence call
+    # failed), try once for the whole reply so replay still works.
+    if not audio_parts and ja_for_tts.strip():
+        try:
+            synth = speech.synthesize(ja_for_tts, voice=voice_enum)
+            if synth.audio:
+                audio_parts.append(synth.audio)
+                audio_mime = synth.mime_type
+                yield _sse(
+                    "audio",
+                    {
+                        "b64": base64.b64encode(synth.audio).decode("ascii"),
+                        "mime": synth.mime_type,
+                    },
+                )
+        except Exception:
+            logger.warning("Whole-reply TTS fallback failed", exc_info=True)
+
+    # Reading-aid backfill — off the audio path by design (audio already sent).
+    parsed_reply = _ensure_reading_aids(llm, user, parsed_reply)
+    yield _sse(
+        "aids",
+        {"hiragana": parsed_reply.hiragana, "english": parsed_reply.english},
+    )
+
+    audio_path: str | None = None
+    if audio_parts:
+        audio_path = _save_audio_file(b"".join(audio_parts), audio_mime)
+
+    _append_turn(
+        engine,
+        session_id,
+        role="assistant",
+        text=ja_for_tts,
+        audio_path=audio_path,
+        hiragana=parsed_reply.hiragana,
+        english=parsed_reply.english,
+    )
+
+    detail = SessionDetailOut(
+        session=_row_to_session(session_row),
+        lesson=_load_lesson_info(engine, session_row.get("lesson_id")),  # type: ignore[arg-type]
+        turns=_load_turns(engine, session_id),
+    )
+    yield _sse("done", detail.model_dump(mode="json"))
+
+
+@router.post("/{session_id}/turn-audio/stream")
+def voice_turn_stream(
+    session_id: int,
+    user: CurrentUser,
+    engine: EngineDep,
+    llm: Annotated[object, Depends(get_provider_for_user_dep)],
+    speech: Annotated[SpeechProvider, Depends(get_speech_provider_dep)],
+    audio: Annotated[UploadFile, File()],
+) -> StreamingResponse:
+    """Streaming variant of voice_turn (SSE).
+
+    STT still runs before the response starts (so STT errors surface as
+    normal HTTP errors and the client can fall back), then the LLM reply is
+    streamed sentence-by-sentence with per-sentence TTS. The persisted turn
+    (full text + one combined audio file + reading aids) is identical to the
+    non-streaming endpoint, so history and replay are unaffected.
+    """
+    session_row = _ensure_owned_active(engine, session_id, int(user["id"]))
+
+    audio_bytes = audio.file.read()
+    if not audio_bytes:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="audio file is empty")
+
+    strong_hints, vocab_hints = _session_phrase_hints(engine, user, session_row)
+    try:
+        transcript = speech.transcribe(
+            audio_bytes,
+            phrase_hints=vocab_hints,
+            strong_hints=strong_hints,
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Speech-to-text error: {exc}",
+        ) from exc
+    if not transcript.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Could not detect any speech in the recording. Try again.",
+        )
+
+    _append_turn(engine, session_id, role="user", text=transcript.strip())
+
+    return StreamingResponse(
+        _stream_voice_reply(
+            engine, session_row, user, llm, speech, session_id, transcript.strip()
+        ),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",  # disable proxy buffering for SSE
+        },
     )
 
 
