@@ -141,15 +141,22 @@ export function Chat({ user }: ChatProps): JSX.Element {
 
   // Auto-play newly arrived assistant audio (only the latest one we haven't played).
   useEffect(() => {
-    if (!detail || !audioRef.current) return;
-    const lastWithAudio = [...detail.turns]
+    const el = audioRef.current;
+    if (!detail || !el) return;
+    const url = [...detail.turns]
       .reverse()
-      .find((t) => t.role === 'assistant' && t.audio_url);
-    if (!lastWithAudio?.audio_url) return;
-    if (lastWithAudio.audio_url === lastPlayedAudioUrl.current) return;
-    lastPlayedAudioUrl.current = lastWithAudio.audio_url;
-    audioRef.current.src = lastWithAudio.audio_url;
-    audioRef.current.play().catch(() => {
+      .find((t) => t.role === 'assistant' && t.audio_url)?.audio_url;
+    if (!url) return;
+    // Always keep the manual playback control aimed at the latest reply —
+    // even when that reply already played live through the streaming queue —
+    // so the play button never replays a stale (e.g. the opening) turn.
+    if (el.dataset.src !== url) {
+      el.src = url;
+      el.dataset.src = url;
+    }
+    if (url === lastPlayedAudioUrl.current) return;
+    lastPlayedAudioUrl.current = url;
+    el.play().catch(() => {
       /* autoplay can be blocked; user can press play */
     });
   }, [detail]);
